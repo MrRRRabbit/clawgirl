@@ -16,3 +16,7 @@ DerivedData/
 
 # Models (too large for git)
 *.mlmodelc/
+
+# Handoff & OpenSpec archives
+HANDOFF.md
+openspec/changes/archive/
