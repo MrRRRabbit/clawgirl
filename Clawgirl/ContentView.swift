@@ -549,20 +549,36 @@ struct InputAreaView: View {
                 }
                 .buttonStyle(.plain)
                 
-                // Text field
-                TextField("输入消息或发送图片...", text: $inputText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 14))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 20)
-                            .fill(Color.white.opacity(0.12))
-                    )
-                    .onSubmit {
-                        sendCurrentMessage()
+                // Text input (supports multi-line with Shift+Enter)
+                ZStack(alignment: .leading) {
+                    if inputText.isEmpty {
+                        Text("输入消息或发送图片...")
+                            .foregroundColor(.white.opacity(0.4))
+                            .font(.system(size: 14))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
                     }
+                    TextEditor(text: $inputText)
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                        .frame(minHeight: 36, maxHeight: 100)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onKeyPress(.return, phases: .down) { _ in
+                            if NSEvent.modifierFlags.contains(.shift) {
+                                return .ignored
+                            } else {
+                                sendCurrentMessage()
+                                return .handled
+                            }
+                        }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(Color.white.opacity(0.12))
+                )
                 
                 // Mic button — press and hold to record, release to stop
                 Image(systemName: chatManager.state == .listening ? "mic.circle.fill" : "mic.fill")
