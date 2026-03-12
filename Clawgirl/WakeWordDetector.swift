@@ -13,7 +13,12 @@ class WakeWordDetector {
     private let maxListenDuration: TimeInterval = 2.0
     
     // Default wake words
-    static let defaultWakeWords = ["小虾", "小蝦", "小瞎", "小下", "小香", "小夏", "小霞", "小侠", "小俠", "虾", "蝦"]
+    static let defaultWakeWords = [
+        // 小虾系列
+        "小虾", "小蝦", "小瞎", "小下", "小夏", "小香", "小霞", "小侠", "小俠",
+        // 波波系列
+        "波波", "伯伯", "博博", "泊泊", "脖脖", "播播"
+    ]
     
     // User-configurable wake words (stored in UserDefaults)
     var wakeWords: [String] {
