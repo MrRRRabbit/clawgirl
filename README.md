@@ -169,6 +169,14 @@ The app needs microphone permission. If the system prompt didn't appear:
 1. Open **System Settings → Privacy & Security → Microphone**
 2. Enable Clawgirl
 
+### TTS voice sounds robotic
+Clawgirl defaults to **Wing (Premium)** voice which needs to be downloaded first:
+1. Open **System Settings → Accessibility → Spoken Content → System Voice → Manage Voices...**
+2. Search for "Wing" (Chinese - Hong Kong) and click the download button
+3. You can also download other Premium/Enhanced voices for better quality
+
+The app will fall back to built-in compact voices if Premium voices aren't installed — they work, but sound less natural.
+
 ### Wake word not detecting
 - Check that the 👂 ear icon is active (turquoise)
 - Check the ⚙️ settings panel — wake model status should be 🟢
