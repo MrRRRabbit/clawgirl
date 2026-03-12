@@ -168,7 +168,7 @@ class ChatManager: ObservableObject {
     }
     
     // Voice selection
-    @Published var zhVoiceId: String = "com.apple.voice.premium.zh-HK.Wing"
+    @Published var zhVoiceId: String = UserDefaults.standard.string(forKey: "zhVoiceId") ?? "com.apple.voice.compact.zh-CN.Tingting"
     @Published var enVoiceId: String = "com.apple.voice.premium.en-AU.Matilda"
     @Published var isWakeModelLoaded: Bool = false
     @Published var isMainModelLoaded: Bool = false

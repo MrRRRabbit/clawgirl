@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var isHovering = false
     @State private var keyMonitor: Any?
     @State private var showWakeWordSettings = false
+    @State private var showShortcutHelp = false
     
     private var modelLoadingText: String {
         if !chatManager.isWakeModelLoaded && !chatManager.isMainModelLoaded {
@@ -105,6 +106,16 @@ struct ContentView: View {
                         SettingsPopoverView()
                             .environmentObject(chatManager)
                     }
+                    
+                    // Shortcut help
+                    Button(action: { showShortcutHelp.toggle() }) {
+                        Image(systemName: "keyboard")
+                            .font(.system(size: 12))
+                            .foregroundColor(.white.opacity(0.5))
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .help("快捷键 (⌘/)")
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
@@ -132,16 +143,34 @@ struct ContentView: View {
         }
         .onAppear { setupKeyMonitor() }
         .onDisappear { removeKeyMonitor() }
+        .onReceive(NotificationCenter.default.publisher(for: .showShortcutHelp)) { _ in
+            showShortcutHelp.toggle()
+        }
+        .sheet(isPresented: $showShortcutHelp) {
+            ShortcutHelpView()
+        }
     }
     
     private func setupKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            // Cmd+D: keyCode 2 = D key
-            if flags.contains(.command) && !flags.contains(.control) && !flags.contains(.option) && event.keyCode == 2 {
-                print("[KeyMonitor] Cmd+D detected, posting notification")
-                NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
-                return nil
+            if flags.contains(.command) && !flags.contains(.control) && !flags.contains(.option) {
+                // Cmd+D: Push-to-talk (keyCode 2 = D)
+                if event.keyCode == 2 {
+                    print("[KeyMonitor] Cmd+D detected, posting notification")
+                    NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
+                    return nil
+                }
+                // Cmd+E: Toggle voice wake (keyCode 14 = E)
+                if event.keyCode == 14 {
+                    NotificationCenter.default.post(name: .toggleVoiceWake, object: nil)
+                    return nil
+                }
+                // Cmd+/: Show shortcut help (keyCode 44 = /)
+                if event.keyCode == 44 {
+                    NotificationCenter.default.post(name: .showShortcutHelp, object: nil)
+                    return nil
+                }
             }
             return event
         }
@@ -157,6 +186,8 @@ struct ContentView: View {
 
 extension Notification.Name {
     static let ctrlDPressed = Notification.Name("ctrlDPressed")
+    static let toggleVoiceWake = Notification.Name("toggleVoiceWake")
+    static let showShortcutHelp = Notification.Name("showShortcutHelp")
 }
 
 // MARK: - StateAnimationView
@@ -589,6 +620,9 @@ struct InputAreaView: View {
         .onReceive(NotificationCenter.default.publisher(for: .ctrlDPressed)) { _ in
             handleCtrlD()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleVoiceWake)) { _ in
+            chatManager.voiceWakeEnabled.toggle()
+        }
     }
     
     private func sendCurrentMessage() {
@@ -887,6 +921,63 @@ struct SettingsPopoverView: View {
         if panel.runModal() == .OK, let url = panel.url {
             chatManager.modelBasePath = url.path
         }
+    }
+}
+
+// MARK: - ShortcutHelpView
+
+struct ShortcutHelpView: View {
+    @Environment(\.dismiss) private var dismiss
+    
+    private let shortcuts: [(key: String, desc: String)] = [
+        ("⌘ D", "语音输入（按住录音，松开发送）"),
+        ("⌘ E", "开启/关闭唤醒词监听"),
+        ("⌘ V", "粘贴图片"),
+        ("⌘ /", "显示快捷键帮助"),
+        ("Enter", "发送文字消息"),
+        ("Shift + Enter", "换行"),
+    ]
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("⌨️ 快捷键")
+                    .font(.title2.bold())
+                Spacer()
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+            }
+            
+            VStack(spacing: 8) {
+                ForEach(shortcuts, id: \.key) { shortcut in
+                    HStack {
+                        Text(shortcut.key)
+                            .font(.system(size: 13, design: .monospaced))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.15)))
+                            .frame(width: 120, alignment: .center)
+                        
+                        Text(shortcut.desc)
+                            .font(.system(size: 13))
+                        
+                        Spacer()
+                    }
+                }
+            }
+            
+            Spacer()
+            
+            Text("提示：说唤醒词（默认\"小虾\"）可免手动操作，直接语音对话")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(20)
+        .frame(width: 360, height: 300)
     }
 }
 
