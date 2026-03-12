@@ -1,6 +1,20 @@
-# 🦞 Clawgirl
+<p align="center">
+  <img src="docs/images/banner.jpeg" alt="Clawgirl Banner" width="100%">
+</p>
 
-A native macOS desktop companion for [OpenClaw](https://github.com/openclaw/openclaw) AI agents — with voice wake word detection, real-time chat, and text-to-speech.
+<h1 align="center">🦞 Clawgirl</h1>
+
+<p align="center">
+  A native macOS desktop companion for <a href="https://github.com/openclaw/openclaw">OpenClaw</a> AI agents<br>
+  Voice wake · Real-time chat · Text-to-speech
+</p>
+
+<p align="center">
+  <img src="docs/images/avatar_idle.png" alt="Idle" width="120">
+  <img src="docs/images/avatar_listening.png" alt="Listening" width="120">
+  <img src="docs/images/avatar_thinking.png" alt="Thinking" width="120">
+  <img src="docs/images/avatar_speaking.png" alt="Speaking" width="120">
+</p>
 
 > Talk to your AI agent like talking to a friend. Say the wake word, speak naturally, and hear the response read back to you.
 
