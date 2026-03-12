@@ -384,6 +384,7 @@ class ChatManager: ObservableObject {
 
     /// VAD 静音计时起点（持续静音后自动停止录音）
     private var vadSilenceStart: Date?
+    private var audioTapCount = 0
 
     /// VAD 自动停止所需静音时长：3.5 秒持续静音后自动停止录音
     private let vadAutoStopSilenceDuration: TimeInterval = 3.5
@@ -410,17 +411,24 @@ class ChatManager: ObservableObject {
     private static func loadOpenClawConfig() -> (gatewayToken: String, deviceToken: String, deviceId: String, publicKey: String, privateKey: String, elevenLabsApiKey: String) {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         
-        // 从 ~/.openclaw/openclaw.json 读取 Gateway Token
+        // 从 ~/.openclaw/openclaw.json 读取 Gateway Token 和 ElevenLabs API Key
         var gatewayToken = ""
+        var elevenLabsApiKey = ""
         let configPath = "\(home)/.openclaw/openclaw.json"
         if let data = FileManager.default.contents(atPath: configPath),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let gateway = json["gateway"] as? [String: Any],
-           let auth = gateway["auth"] as? [String: Any],
-           let token = auth["token"] as? String {
-            gatewayToken = token
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let gateway = json["gateway"] as? [String: Any],
+               let auth = gateway["auth"] as? [String: Any],
+               let token = auth["token"] as? String {
+                gatewayToken = token
+            }
+            if let tools = json["tools"] as? [String: Any],
+               let tts = tools["tts"] as? [String: Any],
+               let key = tts["elevenLabsApiKey"] as? String {
+                elevenLabsApiKey = key
+            }
         }
-        
+
         // 从 ~/.openclaw/identity/device.json 读取设备 ID 和密钥对
         var deviceId = ""
         var publicKey = ""
@@ -432,7 +440,7 @@ class ChatManager: ObservableObject {
             publicKey = json["publicKeyPem"] as? String ?? ""
             privateKey = json["privateKeyPem"] as? String ?? ""
         }
-        
+
         // 从 ~/.openclaw/identity/device-auth.json 读取设备 Token
         var deviceToken = ""
         let authPath = "\(home)/.openclaw/identity/device-auth.json"
@@ -443,17 +451,7 @@ class ChatManager: ObservableObject {
            let token = operator_["token"] as? String {
             deviceToken = token
         }
-        
-        // 从 openclaw.json 读取 ElevenLabs API Key（可选，未配置则为空）
-        var elevenLabsApiKey = ""
-        if let data = FileManager.default.contents(atPath: configPath),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let tools = json["tools"] as? [String: Any],
-           let tts = tools["tts"] as? [String: Any],
-           let key = tts["elevenLabsApiKey"] as? String {
-            elevenLabsApiKey = key
-        }
-        
+
         return (gatewayToken, deviceToken, deviceId, publicKey, privateKey, elevenLabsApiKey)
     }
     
@@ -953,39 +951,42 @@ class ChatManager: ObservableObject {
         let sampleRate = recordingFormat.sampleRate
         debugLog("[Speech] Starting recording, sampleRate=\(sampleRate), channels=\(recordingFormat.channelCount)")
         
-        var tapCount = 0
+        audioTapCount = 0
         // 安装音频 tap：接收麦克风数据，累积样本并计算 RMS
+        // 注意：tap 回调在音频渲染线程执行，必须先提取样本和计算 RMS，
+        // 再通过 Task { @MainActor } 安全地访问 self 的属性
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
-            guard let self = self else { return }
-
-            // 提取 Float 样本（单声道，通道 0）
+            // 在音频线程提取样本（buffer 仅在回调期间有效）
             guard let channelData = buffer.floatChannelData?[0] else { return }
             let frameLength = Int(buffer.frameLength)
             let samples = Array(UnsafeBufferPointer(start: channelData, count: frameLength))
-            self.recordedSamples.append(contentsOf: samples)
 
-            tapCount += 1
-            // 计算当前帧 RMS 能量
+            // 在音频线程计算 RMS 能量（纯计算，无需 MainActor）
             var rms: Float = 0
             for i in 0..<frameLength {
                 rms += channelData[i] * channelData[i]
             }
             rms = sqrtf(rms / Float(frameLength))
-            
-            // 更新峰值 RMS（用于后续判断是否真的有人说话）
-            if rms > self.peakRmsDuringRecording {
-                self.peakRmsDuringRecording = rms
-            }
 
-            // 前三帧和每 100 帧打印一次调试日志
-            if tapCount <= 3 || tapCount % 100 == 0 {
-                debugLog("[Speech] Audio tap #\(tapCount): frames=\(frameLength), totalSamples=\(self.recordedSamples.count), rms=\(String(format: "%.6f", rms))")
-            }
+            // 所有 self 属性访问必须在 MainActor 上执行
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.recordedSamples.append(contentsOf: samples)
 
-            // 唤醒词触发的录音才启用 VAD 自动停止
-            if self.isVoiceWakeTriggered {
-                Task { @MainActor [weak self] in
-                    self?.checkVADAutoStop(rms: rms)
+                self.audioTapCount += 1
+                // 更新峰值 RMS（用于后续判断是否真的有人说话）
+                if rms > self.peakRmsDuringRecording {
+                    self.peakRmsDuringRecording = rms
+                }
+
+                // 前三帧和每 100 帧打印一次调试日志
+                if self.audioTapCount <= 3 || self.audioTapCount % 100 == 0 {
+                    debugLog("[Speech] Audio tap #\(self.audioTapCount): frames=\(frameLength), totalSamples=\(self.recordedSamples.count), rms=\(String(format: "%.6f", rms))")
+                }
+
+                // 唤醒词触发的录音才启用 VAD 自动停止
+                if self.isVoiceWakeTriggered {
+                    self.checkVADAutoStop(rms: rms)
                 }
             }
         }

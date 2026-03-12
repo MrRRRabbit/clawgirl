@@ -854,7 +854,7 @@ struct InputAreaView: View {
                 // 验证数据确实是有效图片
                 guard NSImage(data: data) != nil else { continue }
                 
-                let mimeType = imageType == .png ? "image/png" : "image/png"
+                let mimeType = imageType == .png ? "image/png" : "image/tiff"
                 let attachment = ImageAttachment(
                     data: data,
                     fileName: "clipboard.png",
@@ -905,6 +905,7 @@ struct SettingsPopoverView: View {
     @State private var tempPath = ""
     
     var body: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 16) {
             // ── 唤醒词区域 ──
             Text("唤醒词")
@@ -1052,8 +1053,9 @@ struct SettingsPopoverView: View {
                 .foregroundColor(.secondary)
             }
         }
+        }
         .padding()
-        .frame(width: 320)
+        .frame(width: 320, height: 550)
     }
     
     /// 将输入框中的新唤醒词添加到列表，成功后清空输入框
