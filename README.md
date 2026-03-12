@@ -26,7 +26,10 @@
 - **💬 Real-time Chat** — WebSocket connection to your OpenClaw gateway with streaming responses
 - **🖼️ Image Support** — Drag & drop or paste images to send with your messages
 - **🌊 Beautiful UI** — Ocean blue theme with state-aware animations (idle ripple, listening waves, thinking dots, speaking bars)
-- **⚙️ Fully Configurable** — Gateway URL, token, session, wake words, model path — all in the settings panel
+- **⌨️ Keyboard Shortcuts** — `⌘D` push-to-talk, `⌘E` toggle wake, `⌘/` help panel, `Shift+Enter` newline
+- **📊 Loading Indicator** — Shows model loading progress on startup with status dots
+- **🔒 Microphone Permission** — Explicit permission request on first use
+- **⚙️ Fully Configurable** — Gateway URL, token, session, wake words, model path, TTS voice — all in the settings panel
 
 ## 📋 Requirements
 
@@ -86,8 +89,11 @@ Click the ⚙️ gear icon in the app to configure:
 | **Session Key** | Which OpenClaw session to connect to | `main` |
 | **Model Path** | Where WhisperKit CoreML models are stored | `~/Documents/huggingface/models/argmaxinc/whisperkit-coreml` |
 | **Wake Words** | Words that trigger voice input | 小虾, 小蝦, 小夏, ... |
+| **TTS Voice** | Text-to-speech voice (select from macOS voices) | Tingting (built-in) |
 
-> **Note:** The gateway token is automatically loaded from your local OpenClaw config on first launch. You only need to set it manually if you're connecting to a remote gateway.
+> **Note:** The gateway token is automatically loaded from your local OpenClaw config (`~/.openclaw/openclaw.json`) on first launch. You only need to set it manually if you're connecting to a remote gateway.
+
+> **Note:** Connection settings (Gateway URL, Token, Session) require an app restart to take effect.
 
 ## 🎙️ How Voice Wake Works
 
@@ -115,11 +121,16 @@ Click the ⚙️ gear icon in the app to configure:
 
 ## ⌨️ Keyboard Shortcuts
 
+Press `⌘/` in the app or click the ⌨️ icon to see all shortcuts.
+
 | Shortcut | Action |
 |----------|--------|
-| `⌘D` | Push-to-talk (hold to record, release to send) |
+| `⌘ D` | Push-to-talk (press to record, press again to send) |
+| `⌘ E` | Toggle voice wake word detection on/off |
+| `⌘ V` | Paste image from clipboard |
+| `⌘ /` | Show keyboard shortcuts help |
 | `Enter` | Send text message |
-| `⌘V` | Paste image from clipboard |
+| `Shift + Enter` | Insert new line |
 
 ## 🎨 State Animations
 
@@ -170,7 +181,7 @@ The app needs microphone permission. If the system prompt didn't appear:
 2. Enable Clawgirl
 
 ### TTS voice sounds robotic
-Clawgirl defaults to **Wing (Premium)** voice which needs to be downloaded first:
+Clawgirl defaults to **Tingting** (built-in compact voice). For better quality, download a Premium voice:
 1. Open **System Settings → Accessibility → Spoken Content → System Voice → Manage Voices...**
 2. Search for "Wing" (Chinese - Hong Kong) and click the download button
 3. You can also download other Premium/Enhanced voices for better quality
