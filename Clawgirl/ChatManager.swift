@@ -21,30 +21,7 @@ import os.log
 import SwiftUI
 import WhisperKit
 
-/// 调试日志器：同时输出到控制台和 /tmp/clawd_tts_debug.log 文件
-/// 使用持久化 FileHandle 避免每次写入都开关文件
 private let ttsLog = Logger(subsystem: "com.clawd.avatar", category: "TTS")
-
-/// 日志文件句柄（写入 /tmp/clawd_tts_debug.log，启动时自动创建）
-private let debugLogHandle: FileHandle? = {
-    let logPath = "/tmp/clawd_tts_debug.log"
-    if !FileManager.default.fileExists(atPath: logPath) {
-        FileManager.default.createFile(atPath: logPath, contents: nil)
-    }
-    return FileHandle(forWritingAtPath: logPath)
-}()
-
-/// 全局调试日志函数：带时间戳输出到控制台和日志文件
-/// - Parameter msg: 日志内容
-nonisolated func debugLog(_ msg: String) {
-    let ts = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-    let line = "[\(ts)] \(msg)\n"
-    print(line, terminator: "")
-    if let data = line.data(using: .utf8) {
-        debugLogHandle?.seekToEndOfFile()
-        debugLogHandle?.write(data)
-    }
-}
 
 // MARK: - Chat State
 
