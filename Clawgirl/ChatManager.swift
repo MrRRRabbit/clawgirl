@@ -19,6 +19,7 @@ import CoreML
 import CryptoKit
 import os.log
 import SwiftUI
+import RealTimeCutVADLibrary
 import WhisperKit
 
 private let ttsLog = Logger(subsystem: "com.clawd.avatar", category: "TTS")
@@ -41,11 +42,11 @@ enum ChatState: Equatable {
     /// 各状态对应的主色调（用于背景渐变和状态指示器）
     var primaryColor: Color {
         switch self {
-        case .idle: return Color(hex: "5bbce4")      // 海洋蓝
+        case .idle: return Color(hex: "69D2DB")      // 玻璃海浅蓝绿
         case .listening: return Color(hex: "48d1cc")  // 中等绿松石
-        case .thinking: return Color(hex: "f0c27f")   // 温暖沙色
-        case .speaking: return Color(hex: "ff6b6b")   // 珊瑚红
-        case .error: return Color(hex: "e74c3c")      // 错误红
+        case .thinking: return Color(hex: "A8E6CF")   // 通透薄荷绿
+        case .speaking: return Color(hex: "5BB8C9")   // 清澈蓝绿
+        case .error: return Color(hex: "E8636B")      // 珊瑚红
         }
     }
     
@@ -359,15 +360,7 @@ class ChatManager: ObservableObject {
 
     // ── VAD 自动停止参数 ──
 
-    /// VAD 静音计时起点（持续静音后自动停止录音）
-    private var vadSilenceStart: Date?
     private var audioTapCount = 0
-
-    /// VAD 自动停止所需静音时长：3.5 秒持续静音后自动停止录音
-    private let vadAutoStopSilenceDuration: TimeInterval = 3.5
-
-    /// VAD 能量阈值：RMS 低于此值视为静音
-    private let vadAutoStopEnergyThreshold: Float = 0.01
 
     /// 当前录音是否由唤醒词触发（影响是否启用 VAD 自动停止）
     private var isVoiceWakeTriggered = false
@@ -376,7 +369,12 @@ class ChatManager: ObservableObject {
     private var peakRmsDuringRecording: Float = 0.0
 
     /// 最低有效语音 RMS 阈值：峰值低于此值视为背景噪音，丢弃录音
-    private let minSpeechRms: Float = 0.008
+    private let minSpeechRms: Float = 0.003
+
+    /// Silero VAD 实例（神经网络语音活动检测，替代 RMS 阈值方案）
+    private let vadWrapper: VADWrapper? = VADWrapper()
+    /// VAD delegate 桥接对象
+    private var vadBridge: VADDelegateBridge?
     
     // ── 网络层 ──
 
@@ -498,6 +496,33 @@ class ChatManager: ObservableObject {
                 debugLog("[CM] Wake word detector started (voiceWakeEnabled=true)")
             }
         }
+
+        // 配置 Silero VAD（神经网络语音活动检测）
+        vadWrapper?.setSileroModel(.v5)
+        vadWrapper?.setSamplerate(.SAMPLERATE_48)
+        // 调整语音结束判定：需要约 3 秒静音才确认结束（57 帧 × 32ms ≈ 1.8s，提高到 94 帧 ≈ 3s）
+        vadWrapper?.setThresholdWithVadStartDetectionProbability(
+            0.6,
+            vadEndDetectionProbability: 0.6,
+            voiceStartVadTrueRatio: 0.7,
+            voiceEndVadFalseRatio: 0.95,
+            voiceStartFrameCount: 8,
+            voiceEndFrameCount: 94
+        )
+        vadBridge = VADDelegateBridge(
+            onVoiceStarted: { [weak self] in
+                Task { @MainActor in
+                    self?.handleSileroVoiceStarted()
+                }
+            },
+            onVoiceEnded: { [weak self] in
+                Task { @MainActor in
+                    self?.handleSileroVoiceEnded()
+                }
+            }
+        )
+        vadWrapper?.delegate = vadBridge
+        debugLog("[CM] Silero VAD configured (v5, 48kHz)")
     }
 
     // MARK: - Wake Word
@@ -919,7 +944,6 @@ class ChatManager: ObservableObject {
         state = .listening
         currentTranscription = ""
         recordedSamples.removeAll()
-        vadSilenceStart = nil
         recordingStartTime = Date()
         peakRmsDuringRecording = 0.0
         
@@ -945,6 +969,9 @@ class ChatManager: ObservableObject {
             }
             rms = sqrtf(rms / Float(frameLength))
 
+            // 在音频线程将 PCM 数据喂给 Silero VAD（内部线程安全）
+            self?.vadWrapper?.processAudioData(withBuffer: channelData, count: UInt(frameLength))
+
             // 所有 self 属性访问必须在 MainActor 上执行
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -961,9 +988,9 @@ class ChatManager: ObservableObject {
                     debugLog("[Speech] Audio tap #\(self.audioTapCount): frames=\(frameLength), totalSamples=\(self.recordedSamples.count), rms=\(String(format: "%.6f", rms))")
                 }
 
-                // 唤醒词触发的录音才启用 VAD 自动停止
+                // 超时保护（唤醒词触发的录音）
                 if self.isVoiceWakeTriggered {
-                    self.checkVADAutoStop(rms: rms)
+                    self.checkRecordingTimeout()
                 }
             }
         }
@@ -984,33 +1011,32 @@ class ChatManager: ObservableObject {
     /// 最长录音时间：超过 30 秒强制停止，防止无限录音
     private let maxRecordingDuration: TimeInterval = 30.0
     
-    /// VAD 自动停止检测（仅在唤醒词触发的录音中调用）
-    /// 检测两种停止条件：
-    ///   1. 录音时长超过 maxRecordingDuration
-    ///   2. 持续静音时长超过 vadAutoStopSilenceDuration
-    /// - Parameter rms: 当前音频帧的 RMS 能量值
-    private func checkVADAutoStop(rms: Float) {
-        guard state == .listening, isVoiceWakeTriggered else { return }
+    /// Silero VAD 检测到语音开始
+    private func handleSileroVoiceStarted() {
+        debugLog("[Speech] Silero VAD: voice started (state=\(state), wakeTriggered=\(isVoiceWakeTriggered))")
+    }
 
-        // 超时保护：强制停止
+    /// Silero VAD 检测到语音结束 → 自动停止录音并发送
+    private func handleSileroVoiceEnded() {
+        guard state == .listening, isVoiceWakeTriggered else {
+            debugLog("[Speech] Silero VAD: voice ended (ignored, state=\(state), wakeTriggered=\(isVoiceWakeTriggered))")
+            return
+        }
+        // 录音不足 1.5 秒时忽略（避免开头虚假检测）
+        if let start = recordingStartTime, Date().timeIntervalSince(start) < 1.5 {
+            debugLog("[Speech] Silero VAD: voice ended (ignored, recording too short: \(String(format: "%.1f", Date().timeIntervalSince(start)))s)")
+            return
+        }
+        debugLog("[Speech] Silero VAD: voice ended, auto-stopping")
+        stopListeningAndSend()
+    }
+
+    /// 超时保护检测（仅在唤醒词触发的录音中调用）
+    private func checkRecordingTimeout() {
+        guard state == .listening, isVoiceWakeTriggered else { return }
         if let start = recordingStartTime, Date().timeIntervalSince(start) >= maxRecordingDuration {
             debugLog("[Speech] VAD auto-stop: max recording duration reached (\(maxRecordingDuration)s)")
             stopListeningAndSend()
-            return
-        }
-
-        if rms < vadAutoStopEnergyThreshold {
-            // 当前帧为静音 → 开始/继续计时
-            if vadSilenceStart == nil {
-                vadSilenceStart = Date()
-            } else if Date().timeIntervalSince(vadSilenceStart!) >= vadAutoStopSilenceDuration {
-                // 静音持续超过阈值 → 自动停止
-                debugLog("[Speech] VAD auto-stop triggered after \(vadAutoStopSilenceDuration)s silence")
-                stopListeningAndSend()
-            }
-        } else {
-            // 检测到语音 → 重置静音计时器
-            vadSilenceStart = nil
         }
     }
 
@@ -1177,7 +1203,8 @@ class ChatManager: ObservableObject {
         for sep in separators {
             if let sepIdx = result.lastIndex(of: sep) {
                 let tail = String(result[result.index(after: sepIdx)...]).trimmingCharacters(in: .whitespaces).lowercased()
-                let sepPatterns = ["阿姨", "字幕", "订阅", "点赞", "转发", "打赏", "频道", "栏目", "明镜"]
+                let sepPatterns = ["阿姨", "字幕", "订阅", "点赞", "转发", "打赏", "频道", "栏目", "明镜",
+                                   "支持", "关注", "收藏", "感谢", "谢谢", "subscribe", "like"]
                 for pattern in sepPatterns {
                     if tail.contains(pattern.lowercased()) {
                         result = String(result[..<sepIdx]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1189,9 +1216,20 @@ class ChatManager: ObservableObject {
         
         // 整体幻听过滤：若整段文字就是一个幻听词，返回空字符串
         let finalLower = result.lowercased()
-        let fullHallucinations = ["字幕", "订阅", "点赞", "转发", "谢谢", "谢谢大家", "(笑)", "(拍)", "♪"]
+        let fullHallucinations = ["字幕", "订阅", "点赞", "转发", "谢谢", "谢谢大家", "(笑)", "(拍)", "♪",
+                                  "thank you", "thanks for watching", "please subscribe",
+                                  "like and subscribe", "感谢观看", "感谢收听", "感谢收看"]
         for h in fullHallucinations {
             if finalLower == h.lowercased() { return "" }
+        }
+        
+        // 整段幻听模式检测：如果文本包含多个幻听关键词且没有实质内容
+        let hallucinationKeywords = ["点赞", "订阅", "转发", "打赏", "支持", "明镜", "栏目", "频道",
+                                     "字幕", "谢谢观看", "感谢", "subscribe", "like"]
+        let matchCount = hallucinationKeywords.filter { finalLower.contains($0.lowercased()) }.count
+        if matchCount >= 2 && result.count < 50 {
+            // 包含2个以上幻听关键词且文本较短，大概率是纯幻听
+            return ""
         }
         
         return result
@@ -1846,5 +1884,31 @@ extension Color {
             blue: Double(b) / 255,
             opacity: Double(a) / 255
         )
+    }
+}
+
+// MARK: - VAD Delegate Bridge
+
+/// 桥接对象：将 Silero VAD 的 ObjC delegate 回调转发给 ChatManager
+/// VADDelegate 回调在后台线程触发，通过闭包转发到 MainActor
+class VADDelegateBridge: NSObject, VADDelegate {
+    private let onVoiceStarted: () -> Void
+    private let onVoiceEnded: () -> Void
+
+    init(onVoiceStarted: @escaping () -> Void, onVoiceEnded: @escaping () -> Void) {
+        self.onVoiceStarted = onVoiceStarted
+        self.onVoiceEnded = onVoiceEnded
+    }
+
+    func voiceStarted() {
+        onVoiceStarted()
+    }
+
+    func voiceEnded(withWavData wavData: Data!) {
+        onVoiceEnded()
+    }
+
+    func voiceDidContinue(withPCMFloat pcmFloatData: Data!) {
+        // 不需要实时 PCM 数据，忽略
     }
 }

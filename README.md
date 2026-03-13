@@ -20,8 +20,8 @@
 
 ## ✨ Features
 
-- **🎤 Voice Wake Word Detection** — Say "小虾" (or any custom wake word) to activate hands-free voice input
-- **🗣️ Speech-to-Text** — Powered by [WhisperKit](https://github.com/argmaxinc/WhisperKit) (on-device, no cloud API needed)
+- **🎤 Voice Wake Word Detection** — Say "小虾" (or any custom wake word) to activate hands-free voice input, powered by Silero VAD + WhisperKit
+- **🗣️ Speech-to-Text** — Powered by [WhisperKit](https://github.com/argmaxinc/WhisperKit) (on-device, no cloud API needed), with Silero VAD for intelligent auto-stop
 - **🔊 Text-to-Speech** — Hear AI responses read aloud with configurable macOS voices
 - **💬 Real-time Chat** — WebSocket connection to your OpenClaw gateway with streaming responses
 - **🖼️ Image Support** — Drag & drop or paste images to send with your messages
@@ -74,7 +74,7 @@ huggingface-cli download argmaxinc/whisperkit-coreml \
 
 Open `Clawgirl.xcodeproj` in Xcode, then:
 
-1. Wait for Swift Package Manager to resolve WhisperKit dependency
+1. Wait for Swift Package Manager to resolve dependencies (WhisperKit + RealTimeCutVADLibrary)
 2. Select your Mac as the run destination
 3. Press `⌘R` to build and run
 
@@ -88,7 +88,7 @@ Click the ⚙️ gear icon in the app to configure:
 | **Gateway Token** | Authentication token from `~/.openclaw/openclaw.json` | Auto-detected |
 | **Session Key** | Which OpenClaw session to connect to | `main` |
 | **Model Path** | Where WhisperKit CoreML models are stored | `~/Documents/huggingface/models/argmaxinc/whisperkit-coreml` |
-| **Wake Words** | Words that trigger voice input | 小虾, 小蝦, 小夏, ... |
+| **Wake Words** | Words that trigger voice input | 小虾, 小夏, 小瞎, ... |
 | **TTS Voice** | Text-to-speech voice (select from macOS voices) | Tingting (built-in) |
 
 > **Note:** The gateway token is automatically loaded from your local OpenClaw config (`~/.openclaw/openclaw.json`) on first launch. You only need to set it manually if you're connecting to a remote gateway.
@@ -101,20 +101,20 @@ Click the ⚙️ gear icon in the app to configure:
 ┌─────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────┐
 │  Always-on   │     │  🔔 Alert    │     │  🎤 Record   │     │  📤 Send │
 │  Listening   │────▶│  Sound       │────▶│  Your Voice  │────▶│  Message │
-│  (small model)│     │  (Glass.aiff)│     │  (large-v3)  │     │          │
-└─────────────┘     └──────────────┘     └──────────────┘     └──────────┘
-       │                                        │                    │
-       │ Say "小虾"                    VAD auto-stop           🔔 Submarine
-       │                              (3.5s silence)           sound plays
+│  (Silero VAD │     │  (Glass.aiff)│     │  (large-v3)  │     │          │
+│  + small model)    └──────────────┘     └──────────────┘     └──────────┘
+└─────────────┘                                 │                    │
+       │                                  Silero VAD            🔔 Submarine
+       │ Say "小虾"                     auto-stop (~3s)         sound plays
        ▼                                        ▼                    ▼
-  WhisperKit small                      WhisperKit large-v3    AI responds
-  (wake word only,                     (full transcription)    with TTS
-   never sent)
+  Silero VAD detects voice              WhisperKit large-v3    AI responds
+  → WhisperKit small                   (full transcription)    with TTS
+  (wake word only, never sent)
 ```
 
-1. **Idle** — WhisperKit `small` model continuously listens for the wake word (low CPU usage)
+1. **Idle** — Silero VAD (neural network) continuously monitors microphone; when voice is detected, WhisperKit `small` checks for wake word
 2. **Wake** — Wake word detected → plays Glass alert sound → waits 500ms
-3. **Record** — Records your speech until 3.5 seconds of silence (VAD auto-stop)
+3. **Record** — Records your speech with Silero VAD auto-stop (~3s silence detection, neural network based)
 4. **Send** — Transcribes with WhisperKit `large-v3` → plays Submarine sound → sends to OpenClaw
 5. **Reply** — AI response streams in → displayed in chat → read aloud via TTS
 6. **Resume** — Returns to wake word listening
@@ -152,8 +152,9 @@ clawgirl/
 ├── Clawgirl/
 │   ├── ClawgirlApp.swift          # App entry point
 │   ├── ContentView.swift           # Main UI + settings panel
-│   ├── ChatManager.swift           # Core logic: chat, TTS, WebSocket, WhisperKit
-│   ├── WakeWordDetector.swift      # Wake word detection with WhisperKit small
+│   ├── ChatManager.swift           # Core logic: chat, TTS, WebSocket, WhisperKit, Silero VAD
+│   ├── WakeWordDetector.swift      # Wake word detection with Silero VAD + WhisperKit small
+│   ├── DebugLog.swift              # Debug logging utility (console + file)
 │   ├── Info.plist                  # App permissions (microphone)
 │   ├── Clawgirl.entitlements       # Audio input entitlement
 │   └── Assets/                     # Avatar expression PNGs
@@ -191,7 +192,8 @@ The app will fall back to built-in compact voices if Premium voices aren't insta
 ### Wake word not detecting
 - Check that the 👂 ear icon is active (turquoise)
 - Check the ⚙️ settings panel — wake model status should be 🟢
-- Try speaking louder or closer to the microphone
+- The default wake word "小虾" (and variants 小夏/小瞎) has the best recognition accuracy
+- Try speaking clearly and at normal volume — Silero VAD handles soft speech well
 - Wearing headphones may reduce mic sensitivity
 
 ### "已损坏" or can't open the app
@@ -209,6 +211,7 @@ xattr -cr /path/to/Clawgirl.app
 
 - [OpenClaw](https://github.com/openclaw/openclaw) — AI agent framework
 - [WhisperKit](https://github.com/argmaxinc/WhisperKit) — On-device speech recognition for Apple Silicon
+- [RealTimeCutVADLibrary](https://github.com/sakits/RealTimeCutVADLibrary) — Silero VAD v5 for voice activity detection
 - Built with ❤️ by a lobster girl 🦞
 
 ## 📄 License

@@ -84,6 +84,7 @@
 			name = Clawgirl;
 			packageProductDependencies = (
 				AAAFEA5A2F5DB47D00853319 /* WhisperKit */,
+				AA1234562F6A000000000001 /* RealTimeCutVADLibrary */,
 			);
 			productName = Clawgirl;
 			productReference = AA9B55052F5D44BD0062182F /* Clawgirl.app */;
@@ -115,6 +116,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AAAFEA592F5DB47D00853319 /* XCRemoteSwiftPackageReference "WhisperKit" */,
+				AA1234552F6A000000000001 /* XCRemoteSwiftPackageReference "RealTimeCutVADLibrary" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AA9B55062F5D44BD0062182F /* Products */;
@@ -369,6 +371,14 @@
 				kind = branch;
 			};
 		};
+		AA1234552F6A000000000001 /* XCRemoteSwiftPackageReference "RealTimeCutVADLibrary" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/helloooideeeeea/RealTimeCutVADLibrary.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.14;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -376,6 +386,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AAAFEA592F5DB47D00853319 /* XCRemoteSwiftPackageReference "WhisperKit" */;
 			productName = WhisperKit;
+		};
+		AA1234562F6A000000000001 /* RealTimeCutVADLibrary */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA1234552F6A000000000001 /* XCRemoteSwiftPackageReference "RealTimeCutVADLibrary" */;
+			productName = RealTimeCutVADLibrary;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

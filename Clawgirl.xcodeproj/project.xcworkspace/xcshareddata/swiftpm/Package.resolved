@@ -1,6 +1,15 @@
 {
-  "originHash" : "e843284a09b9d7fb8d0032fe1a3fd1fbd38f28ea54d42a39ccbe396af16d225d",
+  "originHash" : "c92d6399808bdf63a255c5a738830341a61cdd53c7533083cf1c3eb1f7387067",
   "pins" : [
+    {
+      "identity" : "realtimecutvadlibrary",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/helloooideeeeea/RealTimeCutVADLibrary.git",
+      "state" : {
+        "revision" : "b059608836a055dc0ce74ca2d0eeb19fc54cb7d4",
+        "version" : "1.0.14"
+      }
+    },
     {
       "identity" : "swift-argument-parser",
       "kind" : "remoteSourceControl",

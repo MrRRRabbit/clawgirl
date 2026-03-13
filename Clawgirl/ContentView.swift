@@ -52,17 +52,21 @@ struct ContentView: View {
             // 背景：多色渐变，颜色随 ChatState 变化（通过 primaryColor 驱动）
             LinearGradient(
                 colors: [
-                    chatManager.state.primaryColor.opacity(0.25),
-                    Color(hex: "0a1628"),
-                    Color(hex: "0d2b45"),
-                    Color(hex: "1a4a6e"),
-                    Color(hex: "2980b9").opacity(0.6)
+                    Color(hex: "69D2DB"),
+                    Color(hex: "5BB8C9"),
+                    Color(hex: "4BA3B7"),
+                    Color(hex: "3B8EA5"),
+                    Color(hex: "2B7A93")
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
             .ignoresSafeArea()
-            
+
+            // 水纹覆盖层：模拟海水光影波纹
+            WaterRippleOverlay()
+                .ignoresSafeArea()
+
             VStack(spacing: 0) {
                 // 头像区域：龙虾娘头像，鼠标悬停时放大 5%
                 AvatarView(state: chatManager.state)
@@ -84,7 +88,7 @@ struct ContentView: View {
                             .progressViewStyle(.circular)
                         Text(modelLoadingText)
                             .font(.caption2)
-                            .foregroundColor(.white.opacity(0.6))
+                            .foregroundColor(.white.opacity(0.8))
                     }
                     .padding(.bottom, 4)
                 }
@@ -94,7 +98,7 @@ struct ContentView: View {
                     Spacer()
                     // 声音图标
                     Image(systemName: "speaker.wave.2")
-                        .foregroundColor(.white.opacity(0.8))
+                        .foregroundColor(.white.opacity(0.85))
                         .font(.caption)
                     // 中文 TTS 声音选择下拉菜单
                     Picker(selection: $chatManager.zhVoiceId, label: Text("")) {
@@ -112,10 +116,10 @@ struct ContentView: View {
                     }) {
                         Image(systemName: chatManager.voiceWakeEnabled ? "ear.fill" : "ear")
                             .font(.system(size: 14))
-                            .foregroundColor(chatManager.voiceWakeEnabled ? Color(hex: "48d1cc") : .white.opacity(0.5))
+                            .foregroundColor(chatManager.voiceWakeEnabled ? .white : .white.opacity(0.5))
                             .frame(width: 28, height: 28)
                             .background(
-                                Circle().fill(chatManager.voiceWakeEnabled ? Color(hex: "48d1cc").opacity(0.2) : Color.white.opacity(0.1))
+                                Circle().fill(chatManager.voiceWakeEnabled ? Color(hex: "FF6B6B").opacity(0.85) : .white.opacity(0.1))
                             )
                     }
                     .buttonStyle(.plain)
@@ -125,7 +129,7 @@ struct ContentView: View {
                     Button(action: { showWakeWordSettings.toggle() }) {
                         Image(systemName: "gearshape")
                             .font(.system(size: 12))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(.white.opacity(0.85))
                             .frame(width: 24, height: 24)
                     }
                     .buttonStyle(.plain)
@@ -139,7 +143,7 @@ struct ContentView: View {
                     Button(action: { showShortcutHelp.toggle() }) {
                         Image(systemName: "keyboard")
                             .font(.system(size: 12))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(.white.opacity(0.85))
                             .frame(width: 24, height: 24)
                     }
                     .buttonStyle(.plain)
@@ -149,7 +153,11 @@ struct ContentView: View {
                 .padding(.vertical, 6)
                 .background(
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(Color.black.opacity(0.3))
+                        .fill(Color.white.opacity(0.25))
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(.ultraThinMaterial)
+                        )
                 )
                 .padding(.horizontal, 12)
                 .padding(.bottom, 4)
@@ -262,7 +270,7 @@ struct IdleRippleView: View {
         ZStack {
             ForEach(0..<3, id: \.self) { i in
                 Ellipse()
-                    .stroke(Color(hex: "5bbce4").opacity(animate ? 0 : 0.3), lineWidth: 1.5)
+                    .stroke(Color(hex: "69D2DB").opacity(animate ? 0 : 0.3), lineWidth: 1.5)
                     .frame(width: animate ? 160 : 40, height: animate ? 20 : 5)
                     .animation(
                         .easeOut(duration: 3.0)
@@ -315,7 +323,7 @@ struct ThinkingDotsView: View {
         HStack(spacing: 6) {
             ForEach(0..<3, id: \.self) { i in
                 Circle()
-                    .fill(Color(hex: "f0c27f"))
+                    .fill(Color(hex: "A8E6CF"))
                     .frame(width: 8, height: 8)
                     .offset(y: animate ? -6 : 2)
                     .animation(
@@ -339,7 +347,7 @@ struct SpeakingBarsView: View {
         HStack(spacing: 4) {
             ForEach(0..<5, id: \.self) { i in
                 RoundedRectangle(cornerRadius: 2)
-                    .fill(Color(hex: "ff6b6b"))
+                    .fill(Color(hex: "5BB8C9"))
                     // 各柱子目标高度不同，形成不规则声浪感
                     .frame(width: 5, height: animate ? CGFloat([18, 24, 14, 22, 16][i]) : 6)
                     .animation(
@@ -361,12 +369,103 @@ struct ErrorPulseView: View {
     
     var body: some View {
         Circle()
-            .fill(Color(hex: "e74c3c"))
+            .fill(Color(hex: "E8636B"))
             .frame(width: 10, height: 10)
             .scaleEffect(animate ? 1.5 : 1.0)
             .opacity(animate ? 0.5 : 1.0)
             .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: animate)
             .onAppear { animate = true }
+    }
+}
+
+// MARK: - WaterRippleOverlay
+
+/// 水纹覆盖层：用 Canvas + TimelineView 绘制多层缓慢移动的光斑和波纹，模拟海水光影
+struct WaterRippleOverlay: View {
+    /// 光斑配置：每个光斑有固定的随机种子参数
+    private struct CausticSpot {
+        let cx: Double    // 归一化 x 中心 (0~1)
+        let cy: Double    // 归一化 y 中心 (0~1)
+        let rx: Double    // 椭圆半径 x
+        let ry: Double    // 椭圆半径 y
+        let phase: Double // 相位偏移
+        let speed: Double // 移动速度
+        let opacity: Double
+    }
+
+    /// 预生成的光斑参数（12 个）
+    private let spots: [CausticSpot] = {
+        // 用固定种子生成稳定的随机参数
+        let seeds: [(Double, Double, Double, Double, Double, Double, Double)] = [
+            (0.15, 0.20, 40, 25, 0.0, 0.8, 0.08),
+            (0.75, 0.15, 55, 30, 1.2, 0.6, 0.10),
+            (0.40, 0.45, 35, 20, 2.5, 0.9, 0.07),
+            (0.85, 0.55, 50, 28, 0.8, 0.7, 0.09),
+            (0.25, 0.70, 45, 22, 3.1, 0.5, 0.06),
+            (0.60, 0.30, 38, 24, 1.8, 1.0, 0.11),
+            (0.10, 0.85, 42, 26, 4.0, 0.65, 0.08),
+            (0.50, 0.65, 55, 32, 2.2, 0.75, 0.10),
+            (0.90, 0.40, 36, 20, 0.5, 0.85, 0.07),
+            (0.30, 0.10, 48, 28, 3.5, 0.55, 0.09),
+            (0.65, 0.80, 40, 22, 1.5, 0.9, 0.12),
+            (0.20, 0.50, 52, 30, 2.8, 0.7, 0.08),
+        ]
+        return seeds.map { CausticSpot(cx: $0.0, cy: $0.1, rx: $0.2, ry: $0.3, phase: $0.4, speed: $0.5, opacity: $0.6) }
+    }()
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            Canvas { context, size in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+
+                // ── 光斑层（Caustics）──
+                for spot in spots {
+                    let dx = sin(t * spot.speed * 0.4 + spot.phase) * 30
+                    let dy = cos(t * spot.speed * 0.3 + spot.phase * 1.3) * 20
+                    let x = spot.cx * size.width + dx
+                    let y = spot.cy * size.height + dy
+
+                    let rect = CGRect(
+                        x: x - spot.rx,
+                        y: y - spot.ry,
+                        width: spot.rx * 2,
+                        height: spot.ry * 2
+                    )
+                    let path = Path(ellipseIn: rect)
+                    // opacity 在基准值附近轻微波动
+                    let alpha = spot.opacity + sin(t * 0.5 + spot.phase) * 0.02
+                    context.fill(path, with: .color(.white.opacity(alpha)))
+                }
+
+                // ── 波纹层（Wave lines）──
+                let waveCount = 4
+                for i in 0..<waveCount {
+                    let fi = Double(i)
+                    let baseY = size.height * (0.2 + fi * 0.2) // 均匀分布在 20%~80% 高度
+                    let amplitude: Double = 6 + fi * 1.5
+                    let wavelength: Double = 200 + fi * 40
+                    let speed: Double = 0.15 + fi * 0.05
+                    let phase = t * speed + fi * 1.5
+
+                    var path = Path()
+                    let steps = Int(size.width / 4)
+                    for step in 0...steps {
+                        let x = Double(step) * 4
+                        let y = baseY + sin(x / wavelength * .pi * 2 + phase) * amplitude
+                            + sin(x / (wavelength * 0.6) * .pi * 2 + phase * 1.3) * (amplitude * 0.4)
+                        if step == 0 {
+                            path.move(to: CGPoint(x: x, y: y))
+                        } else {
+                            path.addLine(to: CGPoint(x: x, y: y))
+                        }
+                    }
+
+                    let lineOpacity = 0.05 + Double(i) * 0.01
+                    context.stroke(path, with: .color(.white.opacity(lineOpacity)), lineWidth: 1.0)
+                }
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -559,15 +658,15 @@ struct MessageBubble: View {
                 // 消息文字气泡
                 Text(message.content)
                     .font(.system(size: 13))
-                    .foregroundColor(.white)
+                    .foregroundColor(Color(hex: "2C4A5C"))
                     .textSelection(.enabled)  // 允许用户选择复制文字
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(
                         RoundedRectangle(cornerRadius: 16)
                             .fill(message.isUser
-                                  ? Color(hex: "2980b9").opacity(0.45)  // 用户：深蓝半透明
-                                  : Color.white.opacity(0.12))           // AI：浅白半透明
+                                  ? Color.white.opacity(0.35)            // 用户：透明融入背景
+                                  : Color.white.opacity(0.45))           // AI：略不透明
                     )
             }
             
@@ -631,14 +730,14 @@ struct InputAreaView: View {
             }
             
             // 输入行：附件按钮 + 文字输入框 + 麦克风 + 发送
-            HStack(spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
                 // 附件选择按钮：打开文件选择器添加图片
                 Button(action: pickImages) {
                     Image(systemName: "paperclip")
                         .font(.system(size: 20))
-                        .foregroundColor(.white.opacity(0.8))
-                        .frame(width: 40, height: 40)
-                        .background(Circle().fill(Color.white.opacity(0.15)))
+                        .foregroundColor(.white.opacity(0.85))
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(Color.white.opacity(0.3)))
                 }
                 .buttonStyle(.plain)
                 
@@ -647,17 +746,19 @@ struct InputAreaView: View {
                     // Placeholder 文字（TextEditor 没有内置 placeholder，用 ZStack 实现）
                     if inputText.isEmpty {
                         Text("输入消息或发送图片...")
-                            .foregroundColor(.white.opacity(0.4))
+                            .foregroundColor(.white.opacity(0.5))
                             .font(.system(size: 14))
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
+                            .padding(.leading, 17)
+                            .padding(.top, 0)
+                            .allowsHitTesting(false)
                     }
                     TextEditor(text: $inputText)
                         .font(.system(size: 14))
-                        .foregroundColor(.white)
+                        .foregroundColor(Color(hex: "2C4A5C"))
                         .scrollContentBackground(.hidden)
                         .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
+                        .padding(.top, 8)
+                        .padding(.bottom, 0)
                         .frame(minHeight: 36, maxHeight: 100)
                         .fixedSize(horizontal: false, vertical: true)
                         .onKeyPress(.return, phases: .down) { _ in
@@ -671,16 +772,16 @@ struct InputAreaView: View {
                 }
                 .background(
                     RoundedRectangle(cornerRadius: 20)
-                        .fill(Color.white.opacity(0.12))
+                        .fill(Color.white.opacity(0.3))
                 )
-                
+
                 // 麦克风按钮：长按开始录音，松开停止并发送
                 // 使用 LongPressGesture + DragGesture 组合实现 push-to-talk 效果
-                Image(systemName: chatManager.state == .listening ? "mic.circle.fill" : "mic.fill")
-                    .font(.system(size: chatManager.state == .listening ? 22 : 18))
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 18))
                     .foregroundColor(.white)
-                    .frame(width: 40, height: 40)
-                    .background(Circle().fill(chatManager.state == .listening ? Color(hex: "48d1cc") : Color(hex: "ff6b6b")))
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(chatManager.state == .listening ? Color(hex: "E8636B") : Color(hex: "5BB8C9")))
                     .contentShape(Circle())
                     .gesture(
                         // 长按手势（最短 0.1s 触发）：开始录音
@@ -721,8 +822,8 @@ struct InputAreaView: View {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.white.opacity(inputText.isEmpty && selectedImages.isEmpty ? 0.4 : 1.0))
-                        .frame(width: 40, height: 40)
-                        .background(Circle().fill(Color.white.opacity(0.15)))
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(Color(hex: "5BB8C9").opacity(0.3)))
                 }
                 .buttonStyle(.plain)
                 .disabled(inputText.isEmpty && selectedImages.isEmpty)

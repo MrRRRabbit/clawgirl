@@ -11,6 +11,7 @@
 
 import Foundation
 import AVFoundation
+import RealTimeCutVADLibrary
 import WhisperKit
 
 /// 唤醒词检测器
@@ -20,21 +21,16 @@ import WhisperKit
 class WakeWordDetector {
     // MARK: - Configuration
 
-    /// VAD 能量阈值：RMS 值超过此值才视为有效语音，过滤环境噪音
-    private let energyThreshold: Float = 0.006
-
-    /// 静音判定时长：连续静音超过此时间则认为本次语音片段结束
-    private let silenceDuration: TimeInterval = 0.5
-
     /// 单次最长监听时长：超过此时间强制结束并转写，防止无限等待
-    private let maxListenDuration: TimeInterval = 2.0
+    private let maxListenDuration: TimeInterval = 3.0
     
     /// 默认唤醒词列表（包含"小虾"和"波波"的各种谐音/写法，提高召回率）
     static let defaultWakeWords = [
-        // 小虾系列（各种同音字/近音字）
-        "小虾", "小蝦", "小瞎", "小下", "小夏", "小香", "小霞", "小侠", "小俠",
-        // 波波系列（各种同音字/近音字）
-        "波波", "伯伯", "博博", "泊泊", "脖脖", "播播"
+        // 小虾系列：正确写法 + Whisper 高频误转写变体
+        "小虾", "小蝦",   // 简体/繁体
+        "小夏",           // 最常见的 Whisper 转写
+        "小瞎",           // 常见变体
+        "小下", "小霞", "小侠", "小俠", "小香",  // 同音字变体
     ]
     
     /// 用户可自定义的唤醒词列表，持久化存储在 UserDefaults
@@ -69,28 +65,29 @@ class WakeWordDetector {
     /// 是否处于暂停状态（ChatManager 录音/TTS 期间暂停）
     var isPaused = false
 
-    // VAD 相关状态
+    // VAD 相关状态（Silero VAD）
 
-    /// 是否正在捕获一段语音（检测到声音后开始捕获，静音结束后停止）
+    /// Silero VAD 实例
+    private let wakeVad: VADWrapper? = VADWrapper()
+    /// VAD delegate 桥接
+    private var wakeVadBridge: WakeVADDelegateBridge?
+
+    /// 是否正在捕获一段语音
     private var isCapturing = false
 
     /// 当前捕获到的音频样本缓冲区
     private var capturedSamples: [Float] = []
 
-    /// 本次语音片段开始捕获的时间（用于判断是否超过最大时长）
+    /// 本次语音片段开始捕获的时间
     private var captureStartTime: Date?
-
-    /// 最后一次检测到有效语音的时间（用于判断是否超过静音时长）
-    private var lastVoiceTime: Date?
 
     /// 麦克风采样率（根据实际设备动态获取）
     private var inputSampleRate: Double = 48000.0
-    
+
     /// 预缓冲区：保存最近约 0.5 秒的音频，避免语音词头被截断
     private var preBuffer: [Float] = []
-
-    /// 预缓冲区长度（秒），捕获开始时将此段音频前置，确保完整捕获词头
-    private let preBufferDuration: Double = 0.5  // seconds
+    /// 预缓冲区长度（秒）
+    private let preBufferDuration: Double = 0.5
 
     /// 检测到唤醒词时的回调，在主线程触发，通知 ChatManager 开始录音
     var onWakeWordDetected: (() -> Void)?
@@ -170,16 +167,24 @@ class WakeWordDetector {
         isCapturing = false
         capturedSamples.removeAll()
         captureStartTime = nil
-        lastVoiceTime = nil
 
         let inputNode = audioEngine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
         inputSampleRate = recordingFormat.sampleRate
 
-        // 安装音频 tap：每次收到音频缓冲区时在主 actor 上处理
+        // 配置 Silero VAD
+        setupWakeVAD()
+
+        // 安装音频 tap：PCM 数据喂给 Silero VAD，由 VAD 回调驱动捕获
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
+            guard let channelData = buffer.floatChannelData?[0] else { return }
+            let frameLength = Int(buffer.frameLength)
+            // 在音频线程喂给 Silero VAD
+            self?.wakeVad?.processAudioData(withBuffer: channelData, count: UInt(frameLength))
+            // 同时在主线程收集样本（如果正在捕获）
+            let samples = Array(UnsafeBufferPointer(start: channelData, count: frameLength))
             Task { @MainActor [weak self] in
-                self?.processAudioBuffer(buffer)
+                self?.collectSamples(samples)
             }
         }
 
@@ -193,12 +198,43 @@ class WakeWordDetector {
         }
     }
 
+    /// 配置唤醒词用的 Silero VAD
+    private func setupWakeVAD() {
+        wakeVad?.setSileroModel(.v5)
+        // 根据实际采样率设置
+        switch inputSampleRate {
+        case 48000: wakeVad?.setSamplerate(.SAMPLERATE_48)
+        case 24000: wakeVad?.setSamplerate(.SAMPLERATE_24)
+        case 16000: wakeVad?.setSamplerate(.SAMPLERATE_16)
+        default:    wakeVad?.setSamplerate(.SAMPLERATE_48)
+        }
+        // 唤醒词检测：灵敏触发、快速结束（短词）
+        wakeVad?.setThresholdWithVadStartDetectionProbability(
+            0.5,
+            vadEndDetectionProbability: 0.5,
+            voiceStartVadTrueRatio: 0.5,
+            voiceEndVadFalseRatio: 0.8,
+            voiceStartFrameCount: 5,     // ~160ms 确认语音开始
+            voiceEndFrameCount: 16       // ~512ms 静音确认结束（唤醒词很短）
+        )
+        wakeVadBridge = WakeVADDelegateBridge(
+            onVoiceStarted: { [weak self] in
+                Task { @MainActor in self?.handleWakeVADVoiceStarted() }
+            },
+            onVoiceEnded: { [weak self] in
+                Task { @MainActor in self?.handleWakeVADVoiceEnded() }
+            }
+        )
+        wakeVad?.delegate = wakeVadBridge
+    }
+
     /// 停止唤醒词检测，释放音频资源
     func stopDetecting() {
         guard isDetecting else { return }
         isDetecting = false
         isCapturing = false
         capturedSamples.removeAll()
+        preBuffer.removeAll()
 
         // 停止并移除音频 tap
         if audioEngine.isRunning {
@@ -224,81 +260,58 @@ class WakeWordDetector {
         startDetecting()
     }
 
-    // MARK: - Audio Processing
+    // MARK: - Audio Processing (Silero VAD driven)
 
-    /// 处理每一帧麦克风音频数据
-    /// 实现 VAD 逻辑：
-    ///   - 能量超阈值 → 开始/继续捕获
-    ///   - 捕获中静音超时或总时长超限 → 结束捕获，发起转写
-    ///   - 未捕获时维护滚动预缓冲区
-    /// - Parameter buffer: AVFoundation 音频缓冲区
-    private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+    /// 收集音频样本：捕获中则追加到 capturedSamples，否则维护预缓冲区
+    private func collectSamples(_ samples: [Float]) {
         guard isDetecting else { return }
-        guard let channelData = buffer.floatChannelData?[0] else { return }
-        let frameLength = Int(buffer.frameLength)
-        let samples = Array(UnsafeBufferPointer(start: channelData, count: frameLength))
 
-        // 计算 RMS（均方根能量），用于判断是否有语音活动
-        var rms: Float = 0
-        for s in samples { rms += s * s }
-        rms = sqrtf(rms / Float(frameLength))
-
-        let now = Date()
-        
-        // 预缓冲区最大长度（样本数）
-        let maxPreBufferSamples = Int(inputSampleRate * preBufferDuration)
-
-        if rms > energyThreshold {
-            // 检测到有效语音能量
-            if !isCapturing {
-                // 首次检测到语音 → 开始捕获，将预缓冲区前置以避免词头截断
-                isCapturing = true
-                capturedSamples = preBuffer  // 将预缓冲区内容作为语音片段起点
-                preBuffer.removeAll()
-                captureStartTime = now
-                debugLog("[WakeWord] 👂 检测中... (rms=\(String(format: "%.4f", rms)))")
-            }
-            lastVoiceTime = now
+        if isCapturing {
             capturedSamples.append(contentsOf: samples)
-        } else if isCapturing {
-            // 捕获进行中但当前帧为静音
-            capturedSamples.append(contentsOf: samples)
-
-            let silenceElapsed = now.timeIntervalSince(lastVoiceTime ?? now)
-            let totalElapsed = now.timeIntervalSince(captureStartTime ?? now)
-
-            // 静音超时 或 总时长超限 → 判定本次语音片段结束
-            if silenceElapsed >= silenceDuration || totalElapsed >= maxListenDuration {
-                let samplesToTranscribe = capturedSamples
-                // 重置捕获状态
-                isCapturing = false
-                capturedSamples.removeAll()
-                captureStartTime = nil
-                lastVoiceTime = nil
-                
-                // 计算平均能量，过滤极低能量（背景噪音）的片段，避免无效转写
-                var avgEnergy: Float = 0
-                for s in samplesToTranscribe { avgEnergy += s * s }
-                avgEnergy = sqrtf(avgEnergy / Float(max(samplesToTranscribe.count, 1)))
-                
-                // 平均能量过低 → 跳过，认为是背景噪音而非真正语音
-                guard avgEnergy > 0.003 else {
-                    debugLog("[WakeWord] ⏭️ 跳过转写 — avgEnergy \(String(format: "%.4f", avgEnergy)) 太低")
-                    return
-                }
-
-                // 发起异步转写并匹配唤醒词
-                Task { @MainActor in
-                    await transcribeAndCheck(samplesToTranscribe)
-                }
+            // 超时保护：超过最大时长强制结束
+            if let start = captureStartTime, Date().timeIntervalSince(start) >= maxListenDuration {
+                debugLog("[WakeWord] ⏱️ Max listen duration reached, forcing transcription")
+                finishCapture()
             }
         } else {
-            // 当前未捕获 → 维护滚动预缓冲区（保留最近 0.5 秒音频）
+            // 未捕获时维护滚动预缓冲区（保留最近 0.5 秒音频，避免词头截断）
+            let maxPreBufferSamples = Int(inputSampleRate * preBufferDuration)
             preBuffer.append(contentsOf: samples)
             if preBuffer.count > maxPreBufferSamples {
-                // 丢弃最旧的样本，保持固定窗口大小
                 preBuffer.removeFirst(preBuffer.count - maxPreBufferSamples)
             }
+        }
+    }
+
+    /// Silero VAD 检测到人声开始
+    private func handleWakeVADVoiceStarted() {
+        guard isDetecting, !isCapturing else { return }
+        isCapturing = true
+        // 将预缓冲区前置，确保词头不丢失
+        capturedSamples = preBuffer
+        preBuffer.removeAll()
+        captureStartTime = Date()
+        debugLog("[WakeWord] 👂 Silero VAD: voice started, capturing... (preBuffer: \(capturedSamples.count) samples)")
+    }
+
+    /// Silero VAD 检测到人声结束 → 触发转写
+    private func handleWakeVADVoiceEnded() {
+        guard isDetecting, isCapturing else { return }
+        debugLog("[WakeWord] 👂 Silero VAD: voice ended, transcribing...")
+        finishCapture()
+    }
+
+    /// 结束捕获并发起转写
+    private func finishCapture() {
+        let samplesToTranscribe = capturedSamples
+        isCapturing = false
+        capturedSamples.removeAll()
+        captureStartTime = nil
+
+        guard !samplesToTranscribe.isEmpty else { return }
+
+        Task { @MainActor in
+            await transcribeAndCheck(samplesToTranscribe)
         }
     }
 
@@ -338,6 +351,8 @@ class WakeWordDetector {
         debugLog("[WakeWord] Transcribing \(String(format: "%.1f", durationSec))s...")
 
         do {
+            // 不注入 promptTokens — 对 tiny/small 模型，过多 prompt tokens 会导致
+            // 短音频片段返回空结果或严重幻听（如 "謝謝大家!"）
             let options = DecodingOptions(
                 task: .transcribe,
                 language: "zh",       // 指定中文，提高唤醒词识别准确率
@@ -345,12 +360,19 @@ class WakeWordDetector {
                 sampleLength: 224     // 短音频片段限制解码长度
             )
             let results = try await whisper.transcribe(audioArray: resampled, decodeOptions: options)
+
+            // 详细日志：记录每个 segment 的原始文本，便于排查
+            for (i, seg) in results.enumerated() {
+                debugLog("[WakeWord] segment[\(i)]: '\(seg.text)'")
+            }
+
             let text = results.map { $0.text }.joined(separator: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
 
             // 过滤 Whisper 幻听（从噪音/静音中生成的假字幕）
             guard !isHallucination(text) else {
+                debugLog("[WakeWord] ⏭️ 跳过幻听: '\(text)'")
                 return
             }
 
@@ -372,8 +394,10 @@ class WakeWordDetector {
     /// - Parameter text: 已 lowercased 的转写结果
     /// - Returns: 是否匹配到唤醒词
     private func matchesWakeWord(_ text: String) -> Bool {
-        // 去除常见标点，避免标点影响子串匹配
+        // 去除所有空格和常见标点，避免 WhisperKit 在中文字间插入空格导致匹配失败
+        // 例如 WhisperKit 输出 "小 夏" 而唤醒词是 "小夏"
         let normalized = text.lowercased()
+            .replacingOccurrences(of: " ", with: "")
             .replacingOccurrences(of: ",", with: "")
             .replacingOccurrences(of: ".", with: "")
             .replacingOccurrences(of: "?", with: "")
@@ -383,11 +407,19 @@ class WakeWordDetector {
             .replacingOccurrences(of: "？", with: "")
             .replacingOccurrences(of: "！", with: "")
             .trimmingCharacters(in: .whitespaces)
-        
-        // 遍历所有唤醒词，任意匹配即返回 true
+
+        // 唤醒词匹配：要求转写结果足够短（唤醒词长度 + 容差）
+        // 防止正常对话中偶然包含唤醒词导致误触发
+        // 例如 "我就用小虾做煮花鲜吃吧" 包含 "小虾" 但不应触发
         for word in wakeWords {
-            if normalized.contains(word.lowercased()) {
-                return true
+            let w = word.lowercased().replacingOccurrences(of: " ", with: "")
+            if normalized.contains(w) {
+                // 转写长度不超过唤醒词长度 + 3 个字符的容差（允许语气词如 "小虾呀"）
+                if normalized.count <= w.count + 3 {
+                    return true
+                } else {
+                    debugLog("[WakeWord] ⚠️ 包含唤醒词但句子太长(\(normalized.count)字)，跳过: '\(normalized)'")
+                }
             }
         }
         return false
@@ -404,8 +436,9 @@ class WakeWordDetector {
         
         // 常见幻听模式：字幕水印、频道推广、背景音效标注等
         let patterns = [
-            "字幕", "订阅", "点赞", "转发", "打赏", "感谢", "谢谢观看",
-            "明镜", "栏目", "支持", "频道",
+            "字幕", "订阅", "訂閱", "点赞", "點讚", "转发", "轉發",
+            "打赏", "打賞", "感谢", "感謝", "谢谢", "謝謝",
+            "明镜", "明鏡", "栏目", "欄目", "支持", "频道", "頻道",
             "(笑)", "(拍)", "(music)", "♪",
             "字幕:j", "chong", "字幕by",
             "please subscribe", "thank you", "like and subscribe"
@@ -424,7 +457,30 @@ class WakeWordDetector {
             .replacingOccurrences(of: "）", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if stripped.count <= 1 { return true }
-        
+
         return false
     }
+}
+
+// MARK: - Wake VAD Delegate Bridge
+
+/// 桥接 Silero VAD 回调到 WakeWordDetector（后台线程 → MainActor）
+class WakeVADDelegateBridge: NSObject, VADDelegate {
+    private let onVoiceStarted: () -> Void
+    private let onVoiceEnded: () -> Void
+
+    init(onVoiceStarted: @escaping () -> Void, onVoiceEnded: @escaping () -> Void) {
+        self.onVoiceStarted = onVoiceStarted
+        self.onVoiceEnded = onVoiceEnded
+    }
+
+    func voiceStarted() {
+        onVoiceStarted()
+    }
+
+    func voiceEnded(withWavData wavData: Data!) {
+        onVoiceEnded()
+    }
+
+    func voiceDidContinue(withPCMFloat pcmFloatData: Data!) {}
 }

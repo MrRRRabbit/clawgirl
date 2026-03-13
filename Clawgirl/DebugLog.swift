@@ -29,7 +29,7 @@ final class DebugLogWriter: @unchecked Sendable {
 
 /// 全局调试日志函数：带时间戳输出到控制台和日志文件
 /// - Parameter msg: 日志内容
-func debugLog(_ msg: String) {
+nonisolated func debugLog(_ msg: String) {
     let ts = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
     let line = "[\(ts)] \(msg)\n"
     print(line, terminator: "")
