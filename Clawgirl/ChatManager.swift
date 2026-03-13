@@ -233,6 +233,18 @@ class ChatManager: ObservableObject {
     /// 主语音识别模型是否已加载完成（控制加载指示器）
     @Published var isMainModelLoaded: Bool = false
     
+    // ── 快捷键配置（持久化到 UserDefaults） ──
+
+    /// 语音输入快捷键（默认 ⌘D）
+    @Published var shortcutPushToTalk: KeyShortcut = KeyShortcut.load(forKey: "shortcutPushToTalk") ?? .defaultPushToTalk {
+        didSet { shortcutPushToTalk.save(forKey: "shortcutPushToTalk") }
+    }
+
+    /// 语音唤醒快捷键（默认 ⌘E）
+    @Published var shortcutVoiceWake: KeyShortcut = KeyShortcut.load(forKey: "shortcutVoiceWake") ?? .defaultVoiceWake {
+        didSet { shortcutVoiceWake.save(forKey: "shortcutVoiceWake") }
+    }
+
     // ── 网关连接配置（持久化到 UserDefaults） ──
 
     /// WebSocket 服务器地址（如 ws://127.0.0.1:18789）

@@ -16,6 +16,89 @@ import Combine
 import UniformTypeIdentifiers
 import AppKit
 
+// MARK: - KeyShortcut
+
+/// 快捷键配置：存储按键字符 + 修饰键组合，支持持久化和显示格式化
+/// key 为空时表示单独修饰键快捷键（如仅按 ⌥）
+struct KeyShortcut: Codable, Equatable {
+    var key: String              // 按键字符，小写，如 "d", "e"；空字符串表示纯修饰键
+    var command: Bool = false    // ⌘
+    var control: Bool = false    // ⌃
+    var option: Bool = false     // ⌥
+    var shift: Bool = false      // ⇧
+
+    /// 是否有任何修饰键
+    var hasModifiers: Bool { command || control || option || shift }
+
+    /// 是否为纯修饰键快捷键（如单独按 ⌥）
+    var isModifierOnly: Bool { key.isEmpty && hasModifiers }
+
+    /// 格式化显示字符串，如 "⌘ D"、"⌃ ⇧ E"、"⌥"（纯修饰键）
+    var displayString: String {
+        var parts: [String] = []
+        if control { parts.append("⌃") }
+        if option  { parts.append("⌥") }
+        if shift   { parts.append("⇧") }
+        if command { parts.append("⌘") }
+        if !key.isEmpty { parts.append(key.uppercased()) }
+        return parts.joined(separator: " ")
+    }
+
+    /// 检查 keyDown NSEvent 是否匹配此快捷键（仅用于非纯修饰键快捷键）
+    func matchesKeyDown(_ event: NSEvent) -> Bool {
+        guard !isModifierOnly else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let relevantFlags: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+        let activeFlags = flags.intersection(relevantFlags)
+
+        var expectedFlags: NSEvent.ModifierFlags = []
+        if command { expectedFlags.insert(.command) }
+        if control { expectedFlags.insert(.control) }
+        if option  { expectedFlags.insert(.option) }
+        if shift   { expectedFlags.insert(.shift) }
+
+        let eventKey = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        return eventKey == key.lowercased() && activeFlags == expectedFlags
+    }
+
+    /// 获取纯修饰键对应的 NSEvent.ModifierFlags
+    var modifierFlag: NSEvent.ModifierFlags? {
+        guard isModifierOnly else { return nil }
+        // 返回唯一激活的修饰键
+        if command { return .command }
+        if option  { return .option }
+        if control { return .control }
+        if shift   { return .shift }
+        return nil
+    }
+
+    /// 从 UserDefaults 加载
+    static func load(forKey key: String) -> KeyShortcut? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(KeyShortcut.self, from: data)
+    }
+
+    /// 保存到 UserDefaults
+    func save(forKey key: String) {
+        if let data = try? JSONEncoder().encode(self) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    /// 转换为 SwiftUI EventModifiers（用于菜单栏快捷键绑定）
+    var swiftUIModifiers: EventModifiers {
+        var mods: EventModifiers = []
+        if command { mods.insert(.command) }
+        if control { mods.insert(.control) }
+        if option  { mods.insert(.option) }
+        if shift   { mods.insert(.shift) }
+        return mods
+    }
+
+    static let defaultPushToTalk = KeyShortcut(key: "d", command: true)
+    static let defaultVoiceWake  = KeyShortcut(key: "e", command: true)
+}
+
 // MARK: - ContentView
 
 /// 主视图：应用程序的根 UI，包含背景渐变、头像区域、控制栏和聊天区域
@@ -28,6 +111,8 @@ struct ContentView: View {
 
     /// 全局键盘事件监听器（NSEvent monitor）的句柄，用于注销时移除
     @State private var keyMonitor: Any?
+    /// 修饰键事件监听器，用于检测单独修饰键快捷键（如仅按 ⌥）
+    @State private var flagsMonitor: Any?
 
     /// 控制唤醒词设置 Popover 的显示/隐藏
     @State private var showWakeWordSettings = false
@@ -190,40 +275,86 @@ struct ContentView: View {
     }
     
     /// 注册全局键盘事件监听器（仅监听本窗口内的键盘事件）
-    /// 支持以下快捷键：
-    ///   - ⌘D：语音输入（push-to-talk）
-    ///   - ⌘E：切换语音唤醒开关
-    ///   - ⌘/：显示快捷键帮助
+    /// 支持三种快捷键形式：组合键（⌘D）、无修饰键（F）、纯修饰键（⌥）
     private func setupKeyMonitor() {
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            if flags.contains(.command) && !flags.contains(.control) && !flags.contains(.option) {
-                // ⌘D：语音输入（keyCode 2 = D 键）
-                if event.keyCode == 2 {
-                    print("[KeyMonitor] Cmd+D detected, posting notification")
-                    NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
-                    return nil  // 消费事件，不再传递
-                }
-                // ⌘E：切换语音唤醒（keyCode 14 = E 键）
-                if event.keyCode == 14 {
-                    NotificationCenter.default.post(name: .toggleVoiceWake, object: nil)
-                    return nil
-                }
-                // ⌘/：显示快捷键帮助（keyCode 44 = / 键）
-                if event.keyCode == 44 {
-                    NotificationCenter.default.post(name: .showShortcutHelp, object: nil)
-                    return nil
-                }
+        // 用于检测「纯修饰键」快捷键：按下修饰键后未按其他键就松开
+        var pendingModifier: NSEvent.ModifierFlags = []
+        var keyPressedSinceModifier = false
+
+        // ── keyDown 监听器：处理组合键和无修饰键快捷键 ──
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak chatManager] event in
+            guard let chatManager = chatManager else { return event }
+            keyPressedSinceModifier = true  // 有按键，取消纯修饰键检测
+
+            let isTyping = NSApp.keyWindow?.firstResponder is NSTextView
+
+            let ptt = chatManager.shortcutPushToTalk
+            if !ptt.isModifierOnly && ptt.matchesKeyDown(event) && (ptt.hasModifiers || !isTyping) {
+                NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
+                return nil
             }
+
+            let vw = chatManager.shortcutVoiceWake
+            if !vw.isModifierOnly && vw.matchesKeyDown(event) && (vw.hasModifiers || !isTyping) {
+                NotificationCenter.default.post(name: .toggleVoiceWake, object: nil)
+                return nil
+            }
+
+            // ⌘/：显示快捷键帮助（固定）
+            if event.keyCode == 44 && event.modifierFlags.contains(.command) {
+                NotificationCenter.default.post(name: .showShortcutHelp, object: nil)
+                return nil
+            }
+
+            return event
+        }
+
+        // ── flagsChanged 监听器：处理纯修饰键快捷键（如单独按 ⌥） ──
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak chatManager] event in
+            guard let chatManager = chatManager else { return event }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let relevantFlags: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+            let activeFlags = flags.intersection(relevantFlags)
+
+            if !activeFlags.isEmpty && pendingModifier.isEmpty {
+                // 修饰键按下：记录并等待松开
+                pendingModifier = activeFlags
+                keyPressedSinceModifier = false
+            } else if activeFlags.isEmpty && !pendingModifier.isEmpty {
+                // 修饰键松开：如果期间没有按过其他键，则触发纯修饰键快捷键
+                if !keyPressedSinceModifier {
+                    let shortcuts: [(KeyShortcut, Notification.Name)] = [
+                        (chatManager.shortcutPushToTalk, .ctrlDPressed),
+                        (chatManager.shortcutVoiceWake, .toggleVoiceWake),
+                    ]
+                    for (shortcut, notification) in shortcuts {
+                        if shortcut.isModifierOnly, let flag = shortcut.modifierFlag, pendingModifier == flag {
+                            NotificationCenter.default.post(name: notification, object: nil)
+                            break
+                        }
+                    }
+                }
+                pendingModifier = []
+                keyPressedSinceModifier = false
+            } else if activeFlags != pendingModifier {
+                // 修饰键组合变化（如先按 ⌥ 再按 ⇧）：不作为纯修饰键处理
+                pendingModifier = activeFlags
+                keyPressedSinceModifier = true
+            }
+
             return event
         }
     }
-    
+
     /// 注销键盘事件监听器，在视图消失时调用以避免内存泄漏
     private func removeKeyMonitor() {
         if let monitor = keyMonitor {
             NSEvent.removeMonitor(monitor)
             keyMonitor = nil
+        }
+        if let monitor = flagsMonitor {
+            NSEvent.removeMonitor(monitor)
+            flagsMonitor = nil
         }
     }
 }
@@ -1055,7 +1186,31 @@ struct SettingsPopoverView: View {
             .foregroundColor(.secondary)
             
             Divider()
-            
+
+            // ── 快捷键区域 ──
+            Text("快捷键")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 6) {
+                ShortcutRecorderRow(
+                    label: "语音输入",
+                    shortcut: $chatManager.shortcutPushToTalk
+                )
+                ShortcutRecorderRow(
+                    label: "语音唤醒",
+                    shortcut: $chatManager.shortcutVoiceWake
+                )
+
+                Button("恢复默认快捷键") {
+                    chatManager.shortcutPushToTalk = .defaultPushToTalk
+                    chatManager.shortcutVoiceWake = .defaultVoiceWake
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+            }
+
+            Divider()
+
             // ── 网关连接区域 ──
             Text("网关连接")
                 .font(.headline)
@@ -1156,7 +1311,7 @@ struct SettingsPopoverView: View {
         }
         }
         .padding()
-        .frame(width: 320, height: 550)
+        .frame(width: 320, height: 660)
     }
     
     /// 将输入框中的新唤醒词添加到列表，成功后清空输入框
@@ -1180,21 +1335,117 @@ struct SettingsPopoverView: View {
     }
 }
 
+// MARK: - ShortcutRecorderRow
+
+/// 快捷键录入行：点击按钮后捕获按键组合
+/// 支持三种形式：组合键（⌘D）、单键（F）、纯修饰键（⌥）
+struct ShortcutRecorderRow: View {
+    let label: String
+    @Binding var shortcut: KeyShortcut
+    @State private var isRecording = false
+    @State private var keyMonitor: Any?
+    @State private var flagsMonitor: Any?
+    @State private var pendingModifier: NSEvent.ModifierFlags = []
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .font(.caption)
+                .frame(width: 60, alignment: .leading)
+
+            Button(action: { startRecording() }) {
+                Text(isRecording ? "请按键..." : shortcut.displayString)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(width: 140)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 6)
+                        .fill(isRecording ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.1)))
+                    .overlay(RoundedRectangle(cornerRadius: 6)
+                        .stroke(isRecording ? Color.accentColor : Color.clear, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+        }
+        .onDisappear { stopRecording() }
+    }
+
+    private func startRecording() {
+        guard !isRecording else { return }
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        isRecording = true
+        pendingModifier = []
+
+        // 监听 keyDown：捕获字母/数字 + 可选修饰键
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 { // Escape 取消
+                stopRecording()
+                return nil
+            }
+            let char = event.charactersIgnoringModifiers?.lowercased() ?? ""
+            if char.count == 1, let c = char.first, c.isLetter || c.isNumber {
+                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                shortcut = KeyShortcut(
+                    key: char,
+                    command: flags.contains(.command),
+                    control: flags.contains(.control),
+                    option: flags.contains(.option),
+                    shift: flags.contains(.shift)
+                )
+                stopRecording()
+                return nil
+            }
+            return event
+        }
+
+        // 监听 flagsChanged：捕获纯修饰键（按下后松开，无其他键）
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let relevant: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+            let active = flags.intersection(relevant)
+
+            if !active.isEmpty {
+                // 修饰键按下
+                pendingModifier = active
+            } else if !pendingModifier.isEmpty {
+                // 修饰键松开 → 录入为纯修饰键快捷键
+                shortcut = KeyShortcut(
+                    key: "",
+                    command: pendingModifier.contains(.command),
+                    control: pendingModifier.contains(.control),
+                    option: pendingModifier.contains(.option),
+                    shift: pendingModifier.contains(.shift)
+                )
+                stopRecording()
+            }
+            return event
+        }
+    }
+
+    private func stopRecording() {
+        isRecording = false
+        pendingModifier = []
+        if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+        if let m = flagsMonitor { NSEvent.removeMonitor(m); flagsMonitor = nil }
+    }
+}
+
 // MARK: - ShortcutHelpView
 
 /// 快捷键帮助弹窗：以表格形式列出所有可用快捷键及其说明
 struct ShortcutHelpView: View {
+    @EnvironmentObject var chatManager: ChatManager
     @Environment(\.dismiss) private var dismiss
-    
-    /// 快捷键列表：(键位, 功能说明)
-    private let shortcuts: [(key: String, desc: String)] = [
-        ("⌘ D", "语音输入（按住录音，松开发送）"),
-        ("⌘ E", "开启/关闭唤醒词监听"),
-        ("⌘ V", "粘贴图片"),
-        ("⌘ /", "显示快捷键帮助"),
-        ("Enter", "发送文字消息"),
-        ("Shift + Enter", "换行"),
-    ]
+
+    /// 动态生成快捷键列表，反映用户自定义的快捷键
+    private var shortcuts: [(key: String, desc: String)] {
+        [
+            (chatManager.shortcutPushToTalk.displayString, "语音输入（按住录音，松开发送）"),
+            (chatManager.shortcutVoiceWake.displayString, "开启/关闭唤醒词监听"),
+            ("⌘ V", "粘贴图片"),
+            ("⌘ /", "显示快捷键帮助"),
+            ("Enter", "发送文字消息"),
+            ("Shift + Enter", "换行"),
+        ]
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {

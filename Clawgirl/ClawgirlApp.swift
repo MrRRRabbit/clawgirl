@@ -39,13 +39,22 @@ struct ClawgirlApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             // 添加"语音"菜单栏菜单，方便用户通过菜单触发语音输入
+            // 注意：菜单栏快捷键显示为默认值，实际快捷键由 setupKeyMonitor() 中的自定义配置驱动
             CommandMenu("语音") {
-                Button("语音输入 (⌘D)") {
-                    // 通过 NotificationCenter 广播语音输入事件，解耦视图与菜单逻辑
-                    NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
+                if chatManager.shortcutPushToTalk.isModifierOnly {
+                    // 纯修饰键快捷键无法绑定到菜单项，仅显示文字提示
+                    Button("语音输入 (\(chatManager.shortcutPushToTalk.displayString))") {
+                        NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
+                    }
+                } else {
+                    Button("语音输入") {
+                        NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
+                    }
+                    .keyboardShortcut(
+                        KeyEquivalent(Character(chatManager.shortcutPushToTalk.key)),
+                        modifiers: chatManager.shortcutPushToTalk.swiftUIModifiers
+                    )
                 }
-                // 绑定键盘快捷键 ⌘D
-                .keyboardShortcut("d", modifiers: .command)
             }
         }
 
@@ -68,16 +77,35 @@ struct MenuBarView: View {
             openMainWindow()
         }
 
-        Button("语音输入") {
-            openMainWindow()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
+        if chatManager.shortcutPushToTalk.isModifierOnly {
+            Button("语音输入 (\(chatManager.shortcutPushToTalk.displayString))") {
+                openMainWindow()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
+                }
             }
+        } else {
+            Button("语音输入") {
+                openMainWindow()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
+                }
+            }
+            .keyboardShortcut(
+                KeyEquivalent(Character(chatManager.shortcutPushToTalk.key)),
+                modifiers: chatManager.shortcutPushToTalk.swiftUIModifiers
+            )
         }
-        .keyboardShortcut("d", modifiers: .command)
 
-        Toggle("语音唤醒", isOn: $chatManager.voiceWakeEnabled)
-            .keyboardShortcut("e", modifiers: .command)
+        if chatManager.shortcutVoiceWake.isModifierOnly {
+            Toggle("语音唤醒 (\(chatManager.shortcutVoiceWake.displayString))", isOn: $chatManager.voiceWakeEnabled)
+        } else {
+            Toggle("语音唤醒", isOn: $chatManager.voiceWakeEnabled)
+                .keyboardShortcut(
+                    KeyEquivalent(Character(chatManager.shortcutVoiceWake.key)),
+                    modifiers: chatManager.shortcutVoiceWake.swiftUIModifiers
+                )
+        }
 
         Divider()
 
