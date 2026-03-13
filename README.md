@@ -18,6 +18,8 @@
 
 > Talk to your AI agent like talking to a friend. Say the wake word, speak naturally, and hear the response read back to you.
 
+English | [中文](README_CN.md)
+
 ## ✨ Features
 
 - **🎤 Voice Wake Word Detection** — Say "小虾" (or any custom wake word) to activate hands-free voice input, powered by Silero VAD + WhisperKit
