@@ -109,10 +109,7 @@ struct ContentView: View {
     /// 鼠标悬停状态，用于触发头像轻微放大动画
     @State private var isHovering = false
 
-    /// 全局键盘事件监听器（NSEvent monitor）的句柄，用于注销时移除
-    @State private var keyMonitor: Any?
-    /// 修饰键事件监听器，用于检测单独修饰键快捷键（如仅按 ⌥）
-    @State private var flagsMonitor: Any?
+    // 键盘监听器已移至 ChatManager（跟随 App 生命周期，窗口关闭后仍有效）
 
     /// 控制唤醒词设置 Popover 的显示/隐藏
     @State private var showWakeWordSettings = false
@@ -263,8 +260,16 @@ struct ContentView: View {
                 isHovering = hovering
             }
         }
-        .onAppear { setupKeyMonitor() }
-        .onDisappear { removeKeyMonitor() }
+        .onAppear {
+            chatManager.setupKeyboardMonitors()
+            // 捕获主窗口引用并拦截关闭事件（隐藏而非销毁）
+            DispatchQueue.main.async {
+                if let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.canBecomeMain }) {
+                    AppDelegate.mainWindow = window
+                    window.delegate = WindowHideDelegate.shared
+                }
+            }
+        }
         // 接收来自 Notification 的快捷键帮助显示请求
         .onReceive(NotificationCenter.default.publisher(for: .showShortcutHelp)) { _ in
             showShortcutHelp.toggle()
@@ -274,89 +279,8 @@ struct ContentView: View {
         }
     }
     
-    /// 注册全局键盘事件监听器（仅监听本窗口内的键盘事件）
-    /// 支持三种快捷键形式：组合键（⌘D）、无修饰键（F）、纯修饰键（⌥）
-    private func setupKeyMonitor() {
-        // 用于检测「纯修饰键」快捷键：按下修饰键后未按其他键就松开
-        var pendingModifier: NSEvent.ModifierFlags = []
-        var keyPressedSinceModifier = false
-
-        // ── keyDown 监听器：处理组合键和无修饰键快捷键 ──
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak chatManager] event in
-            guard let chatManager = chatManager else { return event }
-            keyPressedSinceModifier = true  // 有按键，取消纯修饰键检测
-
-            let isTyping = NSApp.keyWindow?.firstResponder is NSTextView
-
-            let ptt = chatManager.shortcutPushToTalk
-            if !ptt.isModifierOnly && ptt.matchesKeyDown(event) && (ptt.hasModifiers || !isTyping) {
-                NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
-                return nil
-            }
-
-            let vw = chatManager.shortcutVoiceWake
-            if !vw.isModifierOnly && vw.matchesKeyDown(event) && (vw.hasModifiers || !isTyping) {
-                NotificationCenter.default.post(name: .toggleVoiceWake, object: nil)
-                return nil
-            }
-
-            // ⌘/：显示快捷键帮助（固定）
-            if event.keyCode == 44 && event.modifierFlags.contains(.command) {
-                NotificationCenter.default.post(name: .showShortcutHelp, object: nil)
-                return nil
-            }
-
-            return event
-        }
-
-        // ── flagsChanged 监听器：处理纯修饰键快捷键（如单独按 ⌥） ──
-        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak chatManager] event in
-            guard let chatManager = chatManager else { return event }
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let relevantFlags: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
-            let activeFlags = flags.intersection(relevantFlags)
-
-            if !activeFlags.isEmpty && pendingModifier.isEmpty {
-                // 修饰键按下：记录并等待松开
-                pendingModifier = activeFlags
-                keyPressedSinceModifier = false
-            } else if activeFlags.isEmpty && !pendingModifier.isEmpty {
-                // 修饰键松开：如果期间没有按过其他键，则触发纯修饰键快捷键
-                if !keyPressedSinceModifier {
-                    let shortcuts: [(KeyShortcut, Notification.Name)] = [
-                        (chatManager.shortcutPushToTalk, .ctrlDPressed),
-                        (chatManager.shortcutVoiceWake, .toggleVoiceWake),
-                    ]
-                    for (shortcut, notification) in shortcuts {
-                        if shortcut.isModifierOnly, let flag = shortcut.modifierFlag, pendingModifier == flag {
-                            NotificationCenter.default.post(name: notification, object: nil)
-                            break
-                        }
-                    }
-                }
-                pendingModifier = []
-                keyPressedSinceModifier = false
-            } else if activeFlags != pendingModifier {
-                // 修饰键组合变化（如先按 ⌥ 再按 ⇧）：不作为纯修饰键处理
-                pendingModifier = activeFlags
-                keyPressedSinceModifier = true
-            }
-
-            return event
-        }
-    }
-
-    /// 注销键盘事件监听器，在视图消失时调用以避免内存泄漏
-    private func removeKeyMonitor() {
-        if let monitor = keyMonitor {
-            NSEvent.removeMonitor(monitor)
-            keyMonitor = nil
-        }
-        if let monitor = flagsMonitor {
-            NSEvent.removeMonitor(monitor)
-            flagsMonitor = nil
-        }
-    }
+    // 键盘监听器的注册/注销已移至 ChatManager.setupKeyboardMonitors()
+    // 跟随 App 生命周期，窗口关闭/最小化后快捷键仍有效
 }
 
 /// Notification 扩展：定义 Clawgirl 内部使用的自定义通知名称
@@ -367,6 +291,16 @@ extension Notification.Name {
     static let toggleVoiceWake = Notification.Name("toggleVoiceWake")
     /// 显示快捷键帮助（⌘/）
     static let showShortcutHelp = Notification.Name("showShortcutHelp")
+}
+
+/// 窗口关闭拦截代理：将关闭操作改为隐藏，保留窗口实例以便从菜单栏重新打开
+class WindowHideDelegate: NSObject, NSWindowDelegate {
+    static let shared = WindowHideDelegate()
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.orderOut(nil)  // 隐藏窗口而非销毁
+        return false          // 阻止真正的关闭
+    }
 }
 
 // MARK: - StateAnimationView

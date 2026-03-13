@@ -12,10 +12,30 @@
 
 import SwiftUI
 
-/// AppDelegate：处理关闭窗口后不退出应用的行为
+/// AppDelegate：处理窗口关闭行为和 Dock 图标点击重新打开窗口
 class AppDelegate: NSObject, NSApplicationDelegate {
+    /// 保存主窗口引用，确保关闭/隐藏后仍能找到并恢复
+    static weak var mainWindow: NSWindow?
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return false
+    }
+
+    /// 点击 Dock 图标时重新打开主窗口
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            Self.showMainWindow()
+        }
+        return true
+    }
+
+    /// 显示主窗口（支持隐藏/最小化的窗口恢复）
+    static func showMainWindow() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        if let window = mainWindow {
+            window.deminiaturize(nil)
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 }
 
@@ -30,7 +50,7 @@ struct ClawgirlApp: App {
     @StateObject private var chatManager = ChatManager()
 
     var body: some Scene {
-        WindowGroup {
+        Window("Clawgirl", id: "main") {
             ContentView()
                 // 将 chatManager 注入到视图层级，所有子视图均可通过 @EnvironmentObject 访问
                 .environmentObject(chatManager)
@@ -42,7 +62,6 @@ struct ClawgirlApp: App {
             // 注意：菜单栏快捷键显示为默认值，实际快捷键由 setupKeyMonitor() 中的自定义配置驱动
             CommandMenu("语音") {
                 if chatManager.shortcutPushToTalk.isModifierOnly {
-                    // 纯修饰键快捷键无法绑定到菜单项，仅显示文字提示
                     Button("语音输入 (\(chatManager.shortcutPushToTalk.displayString))") {
                         NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
                     }
@@ -115,13 +134,6 @@ struct MenuBarView: View {
     }
 
     private func openMainWindow() {
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        if let window = NSApplication.shared.windows.first(where: { $0.canBecomeMain }) {
-            window.makeKeyAndOrderFront(nil)
-        } else {
-            // 如果窗口已关闭，通过 openWindow 环境变量无法在此处使用，
-            // 改为发送通知让系统打开新窗口
-            NSApplication.shared.activate(ignoringOtherApps: true)
-        }
+        AppDelegate.showMainWindow()
     }
 }

@@ -245,6 +245,76 @@ class ChatManager: ObservableObject {
         didSet { shortcutVoiceWake.save(forKey: "shortcutVoiceWake") }
     }
 
+    // ── 键盘监听器（跟随 App 生命周期，窗口关闭后仍有效） ──
+    private var keyMonitor: Any?
+    private var flagsMonitor: Any?
+
+    /// 注册全局键盘事件监听器，仅调用一次，跟随 App 生命周期
+    func setupKeyboardMonitors() {
+        guard keyMonitor == nil else { return }
+
+        var pendingModifier: NSEvent.ModifierFlags = []
+        var keyPressedSinceModifier = false
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return event }
+            keyPressedSinceModifier = true
+
+            let isTyping = NSApp.keyWindow?.firstResponder is NSTextView
+
+            let ptt = self.shortcutPushToTalk
+            if !ptt.isModifierOnly && ptt.matchesKeyDown(event) && (ptt.hasModifiers || !isTyping) {
+                NotificationCenter.default.post(name: .ctrlDPressed, object: nil)
+                return nil
+            }
+
+            let vw = self.shortcutVoiceWake
+            if !vw.isModifierOnly && vw.matchesKeyDown(event) && (vw.hasModifiers || !isTyping) {
+                NotificationCenter.default.post(name: .toggleVoiceWake, object: nil)
+                return nil
+            }
+
+            if event.keyCode == 44 && event.modifierFlags.contains(.command) {
+                NotificationCenter.default.post(name: .showShortcutHelp, object: nil)
+                return nil
+            }
+
+            return event
+        }
+
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            guard let self = self else { return event }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let relevant: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+            let activeFlags = flags.intersection(relevant)
+
+            if !activeFlags.isEmpty && pendingModifier.isEmpty {
+                pendingModifier = activeFlags
+                keyPressedSinceModifier = false
+            } else if activeFlags.isEmpty && !pendingModifier.isEmpty {
+                if !keyPressedSinceModifier {
+                    let shortcuts: [(KeyShortcut, Notification.Name)] = [
+                        (self.shortcutPushToTalk, .ctrlDPressed),
+                        (self.shortcutVoiceWake, .toggleVoiceWake),
+                    ]
+                    for (shortcut, notification) in shortcuts {
+                        if shortcut.isModifierOnly, let flag = shortcut.modifierFlag, pendingModifier == flag {
+                            NotificationCenter.default.post(name: notification, object: nil)
+                            break
+                        }
+                    }
+                }
+                pendingModifier = []
+                keyPressedSinceModifier = false
+            } else if activeFlags != pendingModifier {
+                pendingModifier = activeFlags
+                keyPressedSinceModifier = true
+            }
+
+            return event
+        }
+    }
+
     // ── 网关连接配置（持久化到 UserDefaults） ──
 
     /// WebSocket 服务器地址（如 ws://127.0.0.1:18789）
