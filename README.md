@@ -26,7 +26,7 @@
 - **💬 Real-time Chat** — WebSocket connection to your OpenClaw gateway with streaming responses
 - **🖼️ Image Support** — Drag & drop or paste images to send with your messages
 - **🌊 Beautiful UI** — Ocean blue theme with state-aware animations (idle ripple, listening waves, thinking dots, speaking bars)
-- **⌨️ Keyboard Shortcuts** — `⌘D` push-to-talk, `⌘E` toggle wake, `⌘/` help panel, `Shift+Enter` newline
+- **⌨️ Customizable Keyboard Shortcuts** — `⌘D` push-to-talk, `⌘E` toggle wake (default, customizable in settings). Supports combo keys, single keys, and modifier-only shortcuts (e.g., `⌥`)
 - **📊 Loading Indicator** — Shows model loading progress on startup with status dots
 - **🔒 Microphone Permission** — Explicit permission request on first use
 - **⚙️ Fully Configurable** — Gateway URL, token, session, wake words, model path, TTS voice — all in the settings panel
@@ -123,14 +123,16 @@ Click the ⚙️ gear icon in the app to configure:
 
 Press `⌘/` in the app or click the ⌨️ icon to see all shortcuts.
 
-| Shortcut | Action |
-|----------|--------|
-| `⌘ D` | Push-to-talk (press to record, press again to send) |
-| `⌘ E` | Toggle voice wake word detection on/off |
-| `⌘ V` | Paste image from clipboard |
-| `⌘ /` | Show keyboard shortcuts help |
-| `Enter` | Send text message |
-| `Shift + Enter` | Insert new line |
+| Shortcut | Action | Customizable |
+|----------|--------|:---:|
+| `⌘ D` | Push-to-talk (press to record, press again to send) | ✅ |
+| `⌘ E` | Toggle voice wake word detection on/off | ✅ |
+| `⌘ V` | Paste image from clipboard | |
+| `⌘ /` | Show keyboard shortcuts help | |
+| `Enter` | Send text message | |
+| `Shift + Enter` | Insert new line | |
+
+> **Tip:** You can customize Push-to-talk and Voice Wake shortcuts in the ⚙️ settings panel. Supported formats: combo keys (`⌘D`, `⌃⇧E`), single keys (`F`), and modifier-only (`⌥`).
 
 ## 🎨 State Animations
 
