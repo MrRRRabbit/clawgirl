@@ -77,12 +77,36 @@ struct ClawgirlApp: App {
             }
         }
 
-        // 菜单栏常驻图标
+        // 菜单栏常驻图标（根据状态动态变化）
         MenuBarExtra {
             MenuBarView(chatManager: chatManager)
         } label: {
+            MenuBarIconView(state: chatManager.state)
+        }
+    }
+}
+
+/// 菜单栏图标视图：根据 ChatState 动态切换图标
+struct MenuBarIconView: View {
+    let state: ChatState
+
+    var body: some View {
+        switch state {
+        case .idle:
             Image("MenuBarIcon")
                 .renderingMode(.template)
+        case .listening:
+            Image(systemName: "mic.fill")
+                .symbolRenderingMode(.monochrome)
+        case .thinking:
+            Image(systemName: "ellipsis.circle.fill")
+                .symbolRenderingMode(.monochrome)
+        case .speaking:
+            Image(systemName: "speaker.wave.2.fill")
+                .symbolRenderingMode(.monochrome)
+        case .error:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .symbolRenderingMode(.monochrome)
         }
     }
 }

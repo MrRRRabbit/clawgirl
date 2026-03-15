@@ -369,36 +369,33 @@ class ChatManager: ObservableObject {
     @Published var availableSessions: [OpenClawSession] = []
 
     /// 加载 OpenClaw session 列表
+    /// sessions.json 格式：{ "agent:main:main": { sessionId, updatedAt, ... }, ... }
     func loadSessions() {
         let sessionsPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".openclaw/agents/main/sessions/sessions.json")
         guard let data = try? Data(contentsOf: sessionsPath),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let sessions = json["sessions"] as? [[String: Any]] else {
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             debugLog("[Sessions] Failed to load sessions.json")
             return
         }
 
         let agentPrefix = "agent:main:"
-        availableSessions = sessions.compactMap { entry in
-            guard let fullKey = entry["key"] as? String else { return nil }
+        availableSessions = json.compactMap { fullKey, value in
+            guard let entry = value as? [String: Any] else { return nil }
             let sessionKey = fullKey.hasPrefix(agentPrefix)
                 ? String(fullKey.dropFirst(agentPrefix.count))
                 : fullKey
-            let model = entry["model"] as? String
-            let totalTokens = entry["totalTokens"] as? Int
-            let contextTokens = entry["contextTokens"] as? Int
             let updatedAt = entry["updatedAt"] as? Double
             return OpenClawSession(
                 key: sessionKey,
-                model: model,
-                totalTokens: totalTokens,
-                contextTokens: contextTokens,
+                model: entry["model"] as? String,
+                totalTokens: entry["totalTokens"] as? Int,
+                contextTokens: entry["contextTokens"] as? Int,
                 updatedAt: updatedAt.map { Date(timeIntervalSince1970: $0 / 1000) }
             )
         }.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
 
-        // 确保当前选中的 sessionKey 在列表中（可能是手动输入的新 session）
+        // 确保当前选中的 sessionKey 在列表中
         if !availableSessions.contains(where: { $0.key == sessionKey }) {
             availableSessions.insert(OpenClawSession(key: sessionKey, model: nil, totalTokens: nil, contextTokens: nil, updatedAt: nil), at: 0)
         }
@@ -883,12 +880,12 @@ class ChatManager: ObservableObject {
                     }
                     let attachment = [["type": "image", "mimeType": img.mimeType, "fileName": img.fileName, "content": img.data.base64EncodedString()]]
                     debugLog("[CM] Sending image \(i + 1)/\(images.count), fileName=\(img.fileName)")
-                    await connection.sendChatWithAttachments(msg, attachments: attachment)
+                    await connection.sendChatWithAttachments(msg, attachments: attachment, sessionKey: sessionKey)
                 }
                 debugLog("[CM] All \(images.count) image(s) sent")
             } else {
                 // 纯文字消息
-                await connection.sendChat(text)
+                await connection.sendChat(text, sessionKey: sessionKey)
             }
         }
     }
@@ -1588,13 +1585,15 @@ actor WebSocketConnection {
     // MARK: - Send Chat
     
     /// 发送纯文字聊天消息
-    /// - Parameter text: 消息文字内容
-    func sendChat(_ text: String) {
+    /// - Parameters:
+    ///   - text: 消息文字内容
+    ///   - sessionKey: 目标 session key（传入当前用户选择，支持运行时切换）
+    func sendChat(_ text: String, sessionKey: String? = nil) {
         let id = nextRequestId()
         let idempotencyKey = UUID().uuidString  // 幂等键，防止重复发送
-        
+
         let params: [String: Any] = [
-            "sessionKey": config.sessionKey,
+            "sessionKey": sessionKey ?? config.sessionKey,
             "message": text,
             "idempotencyKey": idempotencyKey
         ]
@@ -1615,15 +1614,15 @@ actor WebSocketConnection {
     /// - Parameters:
     ///   - text: 消息文字
     ///   - attachments: 附件数组，每项含 type/mimeType/fileName/content(base64)
-    func sendChatWithAttachments(_ text: String, attachments: [[String: String]]) {
+    func sendChatWithAttachments(_ text: String, attachments: [[String: String]], sessionKey: String? = nil) {
         let id = nextRequestId()
         let idempotencyKey = UUID().uuidString
-        
+
         // 转换为 [String: Any] 确保 JSON 序列化正确
         let anyAttachments: [[String: Any]] = attachments.map { $0 as [String: Any] }
-        
+
         let params: [String: Any] = [
-            "sessionKey": config.sessionKey,
+            "sessionKey": sessionKey ?? config.sessionKey,
             "message": text,
             "attachments": anyAttachments,
             "idempotencyKey": idempotencyKey
