@@ -182,14 +182,25 @@ struct ContentView: View {
                     Image(systemName: "speaker.wave.2")
                         .foregroundColor(.white.opacity(0.85))
                         .font(.caption)
-                    // 中文 TTS 声音选择下拉菜单
+                    // 中文 TTS 声音选择
+                    Text("中").foregroundColor(.white.opacity(0.6)).font(.caption)
                     Picker(selection: $chatManager.zhVoiceId, label: Text("")) {
                         ForEach(chatManager.zhVoiceOptions) { voice in
                             Text(voice.name).tag(voice.id)
                         }
                     }
                     .pickerStyle(.menu)
-                    .frame(minWidth: 120, idealWidth: 160, maxWidth: 200, minHeight: 24, idealHeight: 28, maxHeight: 32)
+                    .frame(minWidth: 100, idealWidth: 130, maxWidth: 160, minHeight: 24, idealHeight: 28, maxHeight: 32)
+                    .colorScheme(.dark)
+                    // 英文 TTS 声音选择
+                    Text("EN").foregroundColor(.white.opacity(0.6)).font(.caption)
+                    Picker(selection: $chatManager.enVoiceId, label: Text("")) {
+                        ForEach(chatManager.enVoiceOptions) { voice in
+                            Text(voice.name).tag(voice.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(minWidth: 100, idealWidth: 130, maxWidth: 160, minHeight: 24, idealHeight: 28, maxHeight: 32)
                     .colorScheme(.dark)
 
                     // 语音唤醒开关按钮：耳朵图标，开启时高亮

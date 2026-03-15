@@ -221,11 +221,15 @@ class ChatManager: ObservableObject {
     
     // ── 声音选择 ──
 
-    /// 当前选择的中文 TTS 声音 identifier，持久化到 UserDefaults
-    @Published var zhVoiceId: String = UserDefaults.standard.string(forKey: "zhVoiceId") ?? "com.apple.voice.compact.zh-CN.Tingting"
+    /// 当前选择的中文 TTS 声音 identifier，持久化到 UserDefaults（默认 Wing 粤语）
+    @Published var zhVoiceId: String = UserDefaults.standard.string(forKey: "zhVoiceId") ?? "com.apple.voice.premium.zh-HK.Wing" {
+        didSet { UserDefaults.standard.set(zhVoiceId, forKey: "zhVoiceId") }
+    }
 
-    /// 当前选择的英文 TTS 声音 identifier（暂未暴露给 UI）
-    @Published var enVoiceId: String = "com.apple.voice.premium.en-AU.Matilda"
+    /// 当前选择的英文 TTS 声音 identifier，持久化到 UserDefaults（默认 Wing 粤语，中英通用）
+    @Published var enVoiceId: String = UserDefaults.standard.string(forKey: "enVoiceId") ?? "com.apple.voice.premium.zh-HK.Wing" {
+        didSet { UserDefaults.standard.set(enVoiceId, forKey: "enVoiceId") }
+    }
 
     /// 唤醒词模型是否已加载完成（控制加载指示器）
     @Published var isWakeModelLoaded: Bool = false
@@ -363,11 +367,11 @@ class ChatManager: ObservableObject {
             .sorted { $0.quality.rawValue > $1.quality.rawValue }  // 高质量声音优先
     }
 
-    /// 系统中可用的英文 TTS 声音列表（按质量降序排列）
+    /// 系统中可用的英文 TTS 声音列表（含粤语 Wing 等可读英文的声音，按质量降序排列）
     var enVoiceOptions: [VoiceOption] {
         var seen = Set<String>()
         return AVSpeechSynthesisVoice.speechVoices()
-            .filter { $0.language.hasPrefix("en") }
+            .filter { $0.language.hasPrefix("en") || $0.language.hasPrefix("zh") || $0.language.hasPrefix("yue") }
             .filter { seen.insert($0.identifier).inserted }
             .map { VoiceOption(id: $0.identifier, name: voiceDisplayName($0), identifier: $0.identifier, language: $0.language, quality: $0.quality) }
             .sorted { $0.quality.rawValue > $1.quality.rawValue }
@@ -893,15 +897,17 @@ class ChatManager: ObservableObject {
         let utterance = AVSpeechUtterance(string: cleanText)
         // 根据文字语言选择声音：含中文字符用中文声音，否则用英文声音
         // 优先使用用户选择的高质量声音，逐级降级
+        // 根据文字语言选择声音：含中文用中文声音，否则用英文声音
+        // 默认中英都是 Wing (Premium)，用户可在 UI 分别切换
         let voice: AVSpeechSynthesisVoice?
         if text.containsChinese {
             voice = AVSpeechSynthesisVoice(identifier: zhVoiceId)
-                ?? AVSpeechSynthesisVoice(identifier: "com.apple.voice.compact.zh-CN.Tingting")
-                ?? AVSpeechSynthesisVoice(language: "zh-CN")
+                ?? AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.zh-HK.Wing")
+                ?? AVSpeechSynthesisVoice(language: "zh-HK")
         } else {
             voice = AVSpeechSynthesisVoice(identifier: enVoiceId)
-                ?? AVSpeechSynthesisVoice(identifier: "com.apple.voice.compact.en-US.Samantha")
-                ?? AVSpeechSynthesisVoice(language: "en-US")
+                ?? AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.zh-HK.Wing")
+                ?? AVSpeechSynthesisVoice(language: "zh-HK")
         }
         utterance.voice = voice
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
