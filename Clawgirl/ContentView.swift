@@ -193,7 +193,7 @@ struct ContentView: View {
                     .frame(minWidth: 100, idealWidth: 130, maxWidth: 160, minHeight: 24, idealHeight: 28, maxHeight: 32)
                     .colorScheme(.dark)
                     // 英文 TTS 声音选择
-                    Text("EN").foregroundColor(.white.opacity(0.6)).font(.caption)
+                    Text("英").foregroundColor(.white.opacity(0.6)).font(.caption)
                     Picker(selection: $chatManager.enVoiceId, label: Text("")) {
                         ForEach(chatManager.enVoiceOptions) { voice in
                             Text(voice.name).tag(voice.id)
@@ -230,6 +230,7 @@ struct ContentView: View {
                     .popover(isPresented: $showWakeWordSettings) {
                         SettingsPopoverView()
                             .environmentObject(chatManager)
+                            .onAppear { chatManager.loadSessions() }
                     }
                     
                     // 快捷键帮助按钮：键盘图标，点击弹出快捷键一览
@@ -1186,9 +1187,19 @@ struct SettingsPopoverView: View {
                     Text("会话")
                         .font(.caption)
                         .frame(width: 40, alignment: .leading)
-                    TextField("main", text: $chatManager.sessionKey)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
+                    Picker(selection: $chatManager.sessionKey, label: Text("")) {
+                        ForEach(chatManager.availableSessions) { session in
+                            Text(session.displayName).tag(session.key)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(minWidth: 120, idealWidth: 180, maxWidth: 240, minHeight: 24, idealHeight: 28, maxHeight: 32)
+                    Button(action: { chatManager.loadSessions() }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .help("刷新会话列表")
                 }
                 
                 // 当前连接状态指示灯

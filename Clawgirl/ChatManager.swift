@@ -104,6 +104,31 @@ struct ChatMessage: Identifiable, Equatable {
     }
 }
 
+// MARK: - OpenClaw Session
+
+/// OpenClaw 会话信息，用于 session 选择下拉列表
+struct OpenClawSession: Identifiable {
+    let key: String
+    let model: String?
+    let totalTokens: Int?
+    let contextTokens: Int?
+    let updatedAt: Date?
+    var id: String { key }
+
+    /// 显示名称：key + token 用量摘要
+    var displayName: String {
+        if let total = totalTokens, let ctx = contextTokens, ctx > 0 {
+            let pct = Int(Double(total) / Double(ctx) * 100)
+            return "\(key) (\(formatTokens(total))/\(formatTokens(ctx)), \(pct)%)"
+        }
+        return key
+    }
+
+    private func formatTokens(_ n: Int) -> String {
+        n >= 1000 ? "\(n / 1000)k" : "\(n)"
+    }
+}
+
 // MARK: - Voice Option
 
 /// TTS 声音选项，用于声音选择 Picker 列表
@@ -221,13 +246,17 @@ class ChatManager: ObservableObject {
     
     // ── 声音选择 ──
 
-    /// 当前选择的中文 TTS 声音 identifier，持久化到 UserDefaults（默认 Wing 粤语）
-    @Published var zhVoiceId: String = UserDefaults.standard.string(forKey: "zhVoiceId") ?? "com.apple.voice.premium.zh-HK.Wing" {
+    /// 默认 TTS 声音（Wing Premium 粤语，中英通用）
+    static let defaultVoiceId = "com.apple.voice.premium.zh-HK.Wing"
+    static let defaultVoiceLanguage = "zh-HK"
+
+    /// 当前选择的中文 TTS 声音 identifier，持久化到 UserDefaults
+    @Published var zhVoiceId: String = UserDefaults.standard.string(forKey: "zhVoiceId") ?? ChatManager.defaultVoiceId {
         didSet { UserDefaults.standard.set(zhVoiceId, forKey: "zhVoiceId") }
     }
 
-    /// 当前选择的英文 TTS 声音 identifier，持久化到 UserDefaults（默认 Wing 粤语，中英通用）
-    @Published var enVoiceId: String = UserDefaults.standard.string(forKey: "enVoiceId") ?? "com.apple.voice.premium.zh-HK.Wing" {
+    /// 当前选择的英文 TTS 声音 identifier，持久化到 UserDefaults
+    @Published var enVoiceId: String = UserDefaults.standard.string(forKey: "enVoiceId") ?? ChatManager.defaultVoiceId {
         didSet { UserDefaults.standard.set(enVoiceId, forKey: "enVoiceId") }
     }
 
@@ -334,6 +363,47 @@ class ChatManager: ObservableObject {
     /// 会话 Key：指定路由到 OpenClaw 哪个 session（默认 "main"）
     @Published var sessionKey: String = UserDefaults.standard.string(forKey: "sessionKey") ?? "main" {
         didSet { UserDefaults.standard.set(sessionKey, forKey: "sessionKey") }
+    }
+
+    /// 从 sessions.json 加载的可用 session 列表
+    @Published var availableSessions: [OpenClawSession] = []
+
+    /// 加载 OpenClaw session 列表
+    func loadSessions() {
+        let sessionsPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".openclaw/agents/main/sessions/sessions.json")
+        guard let data = try? Data(contentsOf: sessionsPath),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sessions = json["sessions"] as? [[String: Any]] else {
+            debugLog("[Sessions] Failed to load sessions.json")
+            return
+        }
+
+        let agentPrefix = "agent:main:"
+        availableSessions = sessions.compactMap { entry in
+            guard let fullKey = entry["key"] as? String else { return nil }
+            let sessionKey = fullKey.hasPrefix(agentPrefix)
+                ? String(fullKey.dropFirst(agentPrefix.count))
+                : fullKey
+            let model = entry["model"] as? String
+            let totalTokens = entry["totalTokens"] as? Int
+            let contextTokens = entry["contextTokens"] as? Int
+            let updatedAt = entry["updatedAt"] as? Double
+            return OpenClawSession(
+                key: sessionKey,
+                model: model,
+                totalTokens: totalTokens,
+                contextTokens: contextTokens,
+                updatedAt: updatedAt.map { Date(timeIntervalSince1970: $0 / 1000) }
+            )
+        }.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
+
+        // 确保当前选中的 sessionKey 在列表中（可能是手动输入的新 session）
+        if !availableSessions.contains(where: { $0.key == sessionKey }) {
+            availableSessions.insert(OpenClawSession(key: sessionKey, model: nil, totalTokens: nil, contextTokens: nil, updatedAt: nil), at: 0)
+        }
+
+        debugLog("[Sessions] Loaded \(availableSessions.count) sessions")
     }
     
     /// WhisperKit CoreML 模型根目录（可在设置中自定义，持久化到 UserDefaults）
@@ -895,19 +965,16 @@ class ChatManager: ObservableObject {
         }
         
         let utterance = AVSpeechUtterance(string: cleanText)
-        // 根据文字语言选择声音：含中文字符用中文声音，否则用英文声音
-        // 优先使用用户选择的高质量声音，逐级降级
-        // 根据文字语言选择声音：含中文用中文声音，否则用英文声音
-        // 默认中英都是 Wing (Premium)，用户可在 UI 分别切换
+        // 根据文字语言选择声音，逐级降级到默认 Wing (Premium)
         let voice: AVSpeechSynthesisVoice?
         if text.containsChinese {
             voice = AVSpeechSynthesisVoice(identifier: zhVoiceId)
-                ?? AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.zh-HK.Wing")
-                ?? AVSpeechSynthesisVoice(language: "zh-HK")
+                ?? AVSpeechSynthesisVoice(identifier: Self.defaultVoiceId)
+                ?? AVSpeechSynthesisVoice(language: Self.defaultVoiceLanguage)
         } else {
             voice = AVSpeechSynthesisVoice(identifier: enVoiceId)
-                ?? AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.zh-HK.Wing")
-                ?? AVSpeechSynthesisVoice(language: "zh-HK")
+                ?? AVSpeechSynthesisVoice(identifier: Self.defaultVoiceId)
+                ?? AVSpeechSynthesisVoice(language: Self.defaultVoiceLanguage)
         }
         utterance.voice = voice
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
