@@ -369,36 +369,33 @@ class ChatManager: ObservableObject {
     @Published var availableSessions: [OpenClawSession] = []
 
     /// 加载 OpenClaw session 列表
+    /// sessions.json 格式：{ "agent:main:main": { sessionId, updatedAt, ... }, ... }
     func loadSessions() {
         let sessionsPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".openclaw/agents/main/sessions/sessions.json")
         guard let data = try? Data(contentsOf: sessionsPath),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let sessions = json["sessions"] as? [[String: Any]] else {
-            debugLog("[Sessions] Failed to load sessions.json")
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            debugLog("[Sessions] Failed to load sessions.json at \(sessionsPath)")
             return
         }
 
         let agentPrefix = "agent:main:"
-        availableSessions = sessions.compactMap { entry in
-            guard let fullKey = entry["key"] as? String else { return nil }
+        availableSessions = json.compactMap { fullKey, value in
+            guard let entry = value as? [String: Any] else { return nil }
             let sessionKey = fullKey.hasPrefix(agentPrefix)
                 ? String(fullKey.dropFirst(agentPrefix.count))
                 : fullKey
-            let model = entry["model"] as? String
-            let totalTokens = entry["totalTokens"] as? Int
-            let contextTokens = entry["contextTokens"] as? Int
             let updatedAt = entry["updatedAt"] as? Double
             return OpenClawSession(
                 key: sessionKey,
-                model: model,
-                totalTokens: totalTokens,
-                contextTokens: contextTokens,
+                model: entry["model"] as? String,
+                totalTokens: entry["totalTokens"] as? Int,
+                contextTokens: entry["contextTokens"] as? Int,
                 updatedAt: updatedAt.map { Date(timeIntervalSince1970: $0 / 1000) }
             )
         }.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
 
-        // 确保当前选中的 sessionKey 在列表中（可能是手动输入的新 session）
+        // 确保当前选中的 sessionKey 在列表中
         if !availableSessions.contains(where: { $0.key == sessionKey }) {
             availableSessions.insert(OpenClawSession(key: sessionKey, model: nil, totalTokens: nil, contextTokens: nil, updatedAt: nil), at: 0)
         }
@@ -619,11 +616,6 @@ class ChatManager: ObservableObject {
         // 显示连接中占位消息
         messages.append(ChatMessage(content: "连接中...", isUser: false))
         
-        // 在后台加载 WhisperKit 模型（不阻塞 UI）
-        Task {
-            await setupWhisperKit()
-        }
-
         // 在后台建立 WebSocket 连接
         Task {
             await startConnection()
@@ -631,7 +623,7 @@ class ChatManager: ObservableObject {
 
         // 将模型路径同步给唤醒词检测器
         wakeWordDetector.modelBasePath = modelBasePath
-        
+
         // 设置唤醒词检测器回调
         wakeWordDetector.onModelLoaded = { [weak self] in
             Task { @MainActor in
@@ -643,9 +635,12 @@ class ChatManager: ObservableObject {
                 self?.handleWakeWordDetected()
             }
         }
-        // 加载唤醒词模型，完成后根据开关决定是否立即启动
+
+        // 先加载主 WhisperKit 模型，然后共享给唤醒词检测器（避免两份模型占用双倍内存）
         Task {
-            await wakeWordDetector.setup()
+            await setupWhisperKit()
+            // 主模型加载完毕，共享给唤醒词检测器
+            await wakeWordDetector.setup(sharedWhisperKit: self.whisperKit)
             if voiceWakeEnabled {
                 wakeWordDetector.isPaused = false
                 wakeWordDetector.startDetecting()

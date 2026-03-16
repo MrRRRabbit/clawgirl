@@ -50,8 +50,11 @@ class WakeWordDetector {
 
     // MARK: - State
 
-    /// WhisperKit 语音转文字引擎实例（轻量模型）
+    /// WhisperKit 语音转文字引擎实例（优先使用外部共享实例，减少内存占用）
     private var whisperKit: WhisperKit?
+
+    /// 是否使用外部共享的 WhisperKit 实例（不由本类管理生命周期）
+    private var usesSharedWhisper = false
 
     /// WhisperKit 是否已加载完成，加载完成前不允许启动检测
     private var whisperReady = false
@@ -97,9 +100,17 @@ class WakeWordDetector {
 
     // MARK: - Init
 
-    /// 初始化入口：异步加载 WhisperKit 轻量模型
-    func setup() async {
-        await loadTinyModel()
+    /// 初始化入口：优先使用共享 WhisperKit 实例，否则自行加载轻量模型
+    func setup(sharedWhisperKit: WhisperKit? = nil) async {
+        if let shared = sharedWhisperKit {
+            whisperKit = shared
+            usesSharedWhisper = true
+            whisperReady = true
+            debugLog("[WakeWord] ✅ Using shared WhisperKit instance")
+            onModelLoaded?()
+        } else {
+            await loadTinyModel()
+        }
     }
 
     /// WhisperKit CoreML 模型根目录，可由外部（ChatManager）设置以支持自定义路径
