@@ -654,16 +654,24 @@ struct MessageBubble: View {
             if message.isUser { Spacer(minLength: 60) }
             
             VStack(alignment: message.isUser ? .trailing : .leading, spacing: 4) {
-                // 如有图片附件，在文字上方显示图片预览
+                // 图片附件（用户发送或 AI 推送）
                 if !message.images.isEmpty {
-                    HStack(spacing: 4) {
+                    VStack(alignment: message.isUser ? .trailing : .leading, spacing: 4) {
                         ForEach(message.images) { img in
-                            if let nsImage = NSImage(data: img.data) {
+                            if !img.data.isEmpty, let nsImage = NSImage(data: img.data) {
+                                // 已有图片数据（本地或已下载）
                                 Image(nsImage: nsImage)
                                     .resizable()
                                     .scaledToFit()
-                                    .frame(maxWidth: 120, maxHeight: 120)
+                                    .frame(maxWidth: 280, maxHeight: 280)
                                     .cornerRadius(8)
+                                    .contextMenu {
+                                        Button("保存图片") { saveImage(img) }
+                                    }
+                            } else if img.url != nil {
+                                // URL 图片加载中
+                                ProgressView()
+                                    .frame(width: 80, height: 80)
                             }
                         }
                     }
@@ -693,6 +701,16 @@ struct MessageBubble: View {
             if !message.isUser { Spacer(minLength: 60) }
         }
         .padding(.horizontal, 4)
+    }
+
+    /// 保存图片到用户选择的位置
+    private func saveImage(_ img: ImageAttachment) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = img.fileName
+        panel.allowedContentTypes = [.png, .jpeg]
+        if panel.runModal() == .OK, let url = panel.url {
+            try? img.data.write(to: url)
+        }
     }
 }
 
