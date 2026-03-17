@@ -38,18 +38,43 @@
 - **macOS 14.0+**（Sonoma 或更高版本）
 - **Apple Silicon**（M1/M2/M3/M4）—— WhisperKit CoreML 模型需要
 - **Xcode 16+** —— 编译项目
-- **[OpenClaw](https://github.com/openclaw/openclaw)** —— 在本机或网络中运行的网关服务
+- **Node.js 18+** —— OpenClaw 运行时依赖（通过 [fnm](https://github.com/Schniz/fnm)、[nvm](https://github.com/nvm-sh/nvm) 或 [Homebrew](https://brew.sh) 安装）
+- **[OpenClaw](https://github.com/openclaw/openclaw)** —— 需在本机完整安装并配置（见下方说明）
 
 ## 🚀 快速开始
 
-### 1. 克隆仓库
+### 1. 安装并配置 OpenClaw
+
+Clawgirl 是 [OpenClaw](https://github.com/openclaw/openclaw) 的桌面前端，需要先完整安装 OpenClaw：
+
+```bash
+# 全局安装 OpenClaw
+npm install -g openclaw
+
+# 运行初始化配置（创建 ~/.openclaw/ 配置目录）
+openclaw setup
+
+# 启动网关（默认端口 18789）
+openclaw gateway start
+```
+
+安装完成后，OpenClaw 会创建以下文件，Clawgirl 会自动读取：
+
+| 文件 | 用途 |
+|------|------|
+| `~/.openclaw/openclaw.json` | 网关认证 Token（首次启动时自动加载） |
+| `~/.openclaw/agents/main/sessions/sessions.json` | 会话列表（填充设置面板中的会话选择器） |
+
+> **注意：** 网关必须在运行状态 Clawgirl 才能连接。可通过 `openclaw gateway status` 查看状态，也可以在 App 设置面板中直接重启网关。
+
+### 2. 克隆仓库
 
 ```bash
 git clone https://github.com/MrRRRabbit/clawgirl.git
 cd clawgirl
 ```
 
-### 2. 下载 WhisperKit 模型
+### 3. 下载 WhisperKit 模型
 
 Clawgirl 使用 WhisperKit 进行端侧语音识别，需要先下载 CoreML 模型：
 
@@ -72,7 +97,7 @@ huggingface-cli download argmaxinc/whisperkit-coreml \
 
 > **💡 提示：** 如果希望更快启动且不需要高精度转写，可以只下载 `openai_whisper-base` 或 `openai_whisper-small`。App 会自动降级使用较小的模型。
 
-### 3. 编译运行
+### 4. 编译运行
 
 在 Xcode 中打开 `Clawgirl.xcodeproj`，然后：
 
@@ -80,7 +105,7 @@ huggingface-cli download argmaxinc/whisperkit-coreml \
 2. 选择你的 Mac 作为运行目标
 3. 按 `⌘R` 编译并运行
 
-### 4. 配置
+### 5. 配置
 
 点击 App 中的 ⚙️ 齿轮图标进行配置：
 
@@ -88,14 +113,14 @@ huggingface-cli download argmaxinc/whisperkit-coreml \
 |--------|------|--------|
 | **网关地址** | OpenClaw 网关 WebSocket 地址 | `ws://127.0.0.1:18789` |
 | **网关 Token** | 认证令牌，来自 `~/.openclaw/openclaw.json` | 自动检测 |
-| **会话 Key** | 连接到 OpenClaw 的哪个 session | `main` |
+| **会话** | 使用哪个 OpenClaw session（下拉选择，从 `~/.openclaw` 自动加载） | `main` |
 | **模型路径** | WhisperKit CoreML 模型存储目录 | `~/Documents/huggingface/models/argmaxinc/whisperkit-coreml` |
 | **唤醒词** | 触发语音输入的关键词 | 小虾、小夏、小瞎 等 |
-| **TTS 语音** | 文字转语音的声音（从 macOS 系统语音中选择） | Tingting（内置） |
+| **TTS 语音** | 中文和英文 TTS 语音（从 macOS 系统语音中选择） | Wing（Premium） |
 
 > **注意：** 网关 Token 会在首次启动时自动从本地 OpenClaw 配置文件（`~/.openclaw/openclaw.json`）读取。只有连接远程网关时才需要手动设置。
 
-> **注意：** 连接设置（网关地址、Token、会话）修改后需要重启 App 才能生效。
+> **注意：** 网关地址和 Token 修改后需要重启 App 才能生效。会话切换即时生效。
 
 ## 🎙️ 语音唤醒工作原理
 
@@ -185,12 +210,12 @@ App 需要麦克风权限。如果系统提示没有弹出：
 2. 启用 Clawgirl
 
 ### TTS 语音听起来很机械
-Clawgirl 默认使用 **Tingting**（内置精简语音）。如需更好的音质，可以下载高级语音：
+Clawgirl 默认使用 **Wing**（Premium，中文 - 香港），中英文通用效果好。如果未下载此语音：
 1. 打开 **系统设置 → 辅助功能 → 朗读内容 → 系统语音 → 管理语音...**
 2. 搜索 "Wing"（中文 - 香港）并点击下载
-3. 也可以下载其他高级/增强语音以获得更好的音质
+3. 也可以下载其他高级/增强语音，在 App 设置中选用
 
-未安装高级语音时，App 会自动降级使用内置精简语音 —— 可以正常使用，但听起来不够自然。
+未安装所选语音时，App 会自动降级使用可用的系统语音。
 
 ### 唤醒词无法检测
 - 确认 👂 耳朵图标处于激活状态（青绿色）
@@ -209,6 +234,29 @@ xattr -cr /path/to/Clawgirl.app
 - 确保 OpenClaw 网关正在运行（`openclaw gateway status`）
 - 检查 ⚙️ 设置中的网关地址和 Token
 - 默认网关端口为 `18789`
+
+## 🔗 依赖说明
+
+### 运行时依赖
+| 依赖 | 用途 | 必需 |
+|------|------|:---:|
+| [OpenClaw](https://github.com/openclaw/openclaw) | AI 智能体网关（WebSocket 后端） | **是** |
+| Node.js 18+ | OpenClaw 运行时 | **是** |
+| macOS Premium TTS 语音 | 高质量语音合成 | 推荐 |
+
+### 构建依赖（Swift Package Manager 自动拉取）
+| 包 | 用途 |
+|---|------|
+| [WhisperKit](https://github.com/argmaxinc/WhisperKit) | Apple Silicon 端侧语音识别 |
+| [RealTimeCutVADLibrary](https://github.com/sakits/RealTimeCutVADLibrary) | Silero VAD v5 语音活动检测 |
+
+### ML 模型（需手动下载）
+| 模型 | 大小 | 用途 |
+|------|------|------|
+| `openai_whisper-large-v3` | ~3 GB | 主语音转写（最高精度） |
+| `openai_whisper-small` | ~500 MB | 唤醒词检测（轻量） |
+
+> App 会按 `large-v3 → small → base → tiny` 顺序降级选择转写模型，唤醒词检测按 `small → base → tiny` 降级。只有已下载的模型会被使用。
 
 ## 🤝 致谢
 

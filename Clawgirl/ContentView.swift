@@ -230,7 +230,7 @@ struct ContentView: View {
                     .popover(isPresented: $showWakeWordSettings) {
                         SettingsPopoverView()
                             .environmentObject(chatManager)
-                            .onAppear { chatManager.loadSessions() }
+                            .onAppear { DispatchQueue.main.async { chatManager.loadSessions() } }
                     }
                     
                     // 快捷键帮助按钮：键盘图标，点击弹出快捷键一览
@@ -284,7 +284,7 @@ struct ContentView: View {
         }
         // 接收来自 Notification 的快捷键帮助显示请求
         .onReceive(NotificationCenter.default.publisher(for: .showShortcutHelp)) { _ in
-            showShortcutHelp.toggle()
+            DispatchQueue.main.async { showShortcutHelp.toggle() }
         }
         .sheet(isPresented: $showShortcutHelp) {
             ShortcutHelpView()
@@ -457,89 +457,29 @@ struct ErrorPulseView: View {
 
 // MARK: - WaterRippleOverlay
 
-/// 水纹覆盖层：用 Canvas + TimelineView 绘制多层缓慢移动的光斑和波纹，模拟海水光影
+/// 静态水纹覆盖层：用固定光斑模拟海水光影，无动画无持续渲染
 struct WaterRippleOverlay: View {
-    /// 光斑配置：每个光斑有固定的随机种子参数
-    private struct CausticSpot {
-        let cx: Double    // 归一化 x 中心 (0~1)
-        let cy: Double    // 归一化 y 中心 (0~1)
-        let rx: Double    // 椭圆半径 x
-        let ry: Double    // 椭圆半径 y
-        let phase: Double // 相位偏移
-        let speed: Double // 移动速度
-        let opacity: Double
-    }
-
-    /// 预生成的光斑参数（12 个）
-    private let spots: [CausticSpot] = {
-        // 用固定种子生成稳定的随机参数
-        let seeds: [(Double, Double, Double, Double, Double, Double, Double)] = [
-            (0.15, 0.20, 40, 25, 0.0, 0.8, 0.08),
-            (0.75, 0.15, 55, 30, 1.2, 0.6, 0.10),
-            (0.40, 0.45, 35, 20, 2.5, 0.9, 0.07),
-            (0.85, 0.55, 50, 28, 0.8, 0.7, 0.09),
-            (0.25, 0.70, 45, 22, 3.1, 0.5, 0.06),
-            (0.60, 0.30, 38, 24, 1.8, 1.0, 0.11),
-            (0.10, 0.85, 42, 26, 4.0, 0.65, 0.08),
-            (0.50, 0.65, 55, 32, 2.2, 0.75, 0.10),
-            (0.90, 0.40, 36, 20, 0.5, 0.85, 0.07),
-            (0.30, 0.10, 48, 28, 3.5, 0.55, 0.09),
-            (0.65, 0.80, 40, 22, 1.5, 0.9, 0.12),
-            (0.20, 0.50, 52, 30, 2.8, 0.7, 0.08),
-        ]
-        return seeds.map { CausticSpot(cx: $0.0, cy: $0.1, rx: $0.2, ry: $0.3, phase: $0.4, speed: $0.5, opacity: $0.6) }
-    }()
-
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            Canvas { context, size in
-                let t = timeline.date.timeIntervalSinceReferenceDate
-
-                // ── 光斑层（Caustics）──
-                for spot in spots {
-                    let dx = sin(t * spot.speed * 0.4 + spot.phase) * 30
-                    let dy = cos(t * spot.speed * 0.3 + spot.phase * 1.3) * 20
-                    let x = spot.cx * size.width + dx
-                    let y = spot.cy * size.height + dy
-
-                    let rect = CGRect(
-                        x: x - spot.rx,
-                        y: y - spot.ry,
-                        width: spot.rx * 2,
-                        height: spot.ry * 2
-                    )
-                    let path = Path(ellipseIn: rect)
-                    // opacity 在基准值附近轻微波动
-                    let alpha = spot.opacity + sin(t * 0.5 + spot.phase) * 0.02
-                    context.fill(path, with: .color(.white.opacity(alpha)))
-                }
-
-                // ── 波纹层（Wave lines）──
-                let waveCount = 4
-                for i in 0..<waveCount {
-                    let fi = Double(i)
-                    let baseY = size.height * (0.2 + fi * 0.2) // 均匀分布在 20%~80% 高度
-                    let amplitude: Double = 6 + fi * 1.5
-                    let wavelength: Double = 200 + fi * 40
-                    let speed: Double = 0.15 + fi * 0.05
-                    let phase = t * speed + fi * 1.5
-
-                    var path = Path()
-                    let steps = Int(size.width / 4)
-                    for step in 0...steps {
-                        let x = Double(step) * 4
-                        let y = baseY + sin(x / wavelength * .pi * 2 + phase) * amplitude
-                            + sin(x / (wavelength * 0.6) * .pi * 2 + phase * 1.3) * (amplitude * 0.4)
-                        if step == 0 {
-                            path.move(to: CGPoint(x: x, y: y))
-                        } else {
-                            path.addLine(to: CGPoint(x: x, y: y))
-                        }
-                    }
-
-                    let lineOpacity = 0.05 + Double(i) * 0.01
-                    context.stroke(path, with: .color(.white.opacity(lineOpacity)), lineWidth: 1.0)
-                }
+        Canvas { context, size in
+            // 静态光斑
+            let spots: [(Double, Double, Double, Double, Double)] = [
+                (0.15, 0.20, 40, 25, 0.08),
+                (0.75, 0.15, 55, 30, 0.10),
+                (0.40, 0.45, 35, 20, 0.07),
+                (0.85, 0.55, 50, 28, 0.09),
+                (0.25, 0.70, 45, 22, 0.06),
+                (0.60, 0.30, 38, 24, 0.11),
+                (0.50, 0.65, 55, 32, 0.10),
+                (0.65, 0.80, 40, 22, 0.12),
+            ]
+            for (cx, cy, rx, ry, opacity) in spots {
+                let rect = CGRect(
+                    x: cx * size.width - rx,
+                    y: cy * size.height - ry,
+                    width: rx * 2,
+                    height: ry * 2
+                )
+                context.fill(Path(ellipseIn: rect), with: .color(.white.opacity(opacity)))
             }
         }
         .allowsHitTesting(false)
@@ -745,6 +685,11 @@ struct MessageBubble: View {
                                   ? Color.white.opacity(0.35)            // 用户：透明融入背景
                                   : Color.white.opacity(0.45))           // AI：略不透明
                     )
+                
+                // 消息时间戳
+                Text(message.timestamp, format: .dateTime.month().day().hour().minute())
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.5))
             }
             
             // AI 消息：右侧 Spacer 推到左边
@@ -910,11 +855,11 @@ struct InputAreaView: View {
         .onDisappear { removePasteMonitor() }
         // 接收 ⌘D 快捷键通知：切换录音状态
         .onReceive(NotificationCenter.default.publisher(for: .ctrlDPressed)) { _ in
-            handleCtrlD()
+            DispatchQueue.main.async { handleCtrlD() }
         }
         // 接收 ⌘E 通知：切换语音唤醒开关
         .onReceive(NotificationCenter.default.publisher(for: .toggleVoiceWake)) { _ in
-            chatManager.voiceWakeEnabled.toggle()
+            DispatchQueue.main.async { chatManager.voiceWakeEnabled.toggle() }
         }
     }
     
@@ -1082,6 +1027,14 @@ struct SettingsPopoverView: View {
     /// 模型路径临时编辑值（当前未使用，预留）
     @State private var tempPath = ""
     
+    /// 网关重启状态
+    @State private var showResetSessionConfirm = false
+    @State private var isRestartingGateway = false
+    @State private var gatewayRestartStatus = ""
+    
+    /// openclaw CLI 自定义路径
+    @State private var openclawCustomPath: String = UserDefaults.standard.string(forKey: "openclawPath") ?? ""
+    
     var body: some View {
         ScrollView {
         VStack(alignment: .leading, spacing: 16) {
@@ -1200,6 +1153,21 @@ struct SettingsPopoverView: View {
                     }
                     .buttonStyle(.plain)
                     .help("刷新会话列表")
+                    Button(action: { showResetSessionConfirm = true }) {
+                        Image(systemName: "trash")
+                            .font(.caption)
+                            .foregroundColor(.red.opacity(0.7))
+                    }
+                    .buttonStyle(.plain)
+                    .help("重置当前会话")
+                    .alert("重置会话", isPresented: $showResetSessionConfirm) {
+                        Button("取消", role: .cancel) {}
+                        Button("重置", role: .destructive) {
+                            chatManager.resetCurrentSession()
+                        }
+                    } message: {
+                        Text("确定要重置会话「\(chatManager.sessionKey)」吗？\n这将清除该会话的所有对话历史。")
+                    }
                 }
                 
                 // 当前连接状态指示灯
@@ -1217,6 +1185,59 @@ struct SettingsPopoverView: View {
                     .font(.caption2)
                     .foregroundColor(.orange.opacity(0.8))
             }
+            
+            Divider()
+            
+            // ── 网关操作区域 ──
+            Text("网关操作")
+                .font(.headline)
+            
+            HStack {
+                Button(action: { restartGateway() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                        Text("重启网关")
+                    }
+                    .font(.system(size: 12))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.2)))
+                }
+                .buttonStyle(.plain)
+                .disabled(isRestartingGateway)
+                
+                if isRestartingGateway {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                    Text(gatewayRestartStatus)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                } else if !gatewayRestartStatus.isEmpty {
+                    Text(gatewayRestartStatus)
+                        .font(.caption2)
+                        .foregroundColor(gatewayRestartStatus.contains("✅") ? .green : .red)
+                }
+            }
+            
+            HStack {
+                Text("CLI")
+                    .font(.caption)
+                    .frame(width: 40, alignment: .leading)
+                TextField("自动探测", text: $openclawCustomPath)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .onChange(of: openclawCustomPath) {
+                        let trimmed = openclawCustomPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if trimmed.isEmpty {
+                            UserDefaults.standard.removeObject(forKey: "openclawPath")
+                        } else {
+                            UserDefaults.standard.set(trimmed, forKey: "openclawPath")
+                        }
+                    }
+            }
+            Text("留空则自动探测 openclaw 路径")
+                .font(.caption2)
+                .foregroundColor(.secondary)
             
             Divider()
             
@@ -1274,6 +1295,98 @@ struct SettingsPopoverView: View {
     private func addWord() {
         chatManager.addWakeWord(newWord)
         newWord = ""
+    }
+    
+    /// 重启 OpenClaw 网关
+    private func restartGateway() {
+        isRestartingGateway = true
+        gatewayRestartStatus = "重启中..."
+        
+        Task {
+            let process = Process()
+            let pipe = Pipe()
+            
+            // 按优先级搜索 openclaw 可执行文件
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let fm = FileManager.default
+
+            // 动态搜索 fnm/nvm 安装的 node 版本目录（取最新版本）
+            var searchPaths = [UserDefaults.standard.string(forKey: "openclawPath") ?? ""]
+            var nodeBinPaths: [String] = ["/opt/homebrew/bin", "/usr/local/bin"]
+
+            // fnm: ~/.local/share/fnm/node-versions/*/installation/bin
+            let fnmBase = "\(home)/.local/share/fnm/node-versions"
+            if let versions = try? fm.contentsOfDirectory(atPath: fnmBase) {
+                let sorted = versions.sorted().reversed()  // 最新版本优先
+                for v in sorted {
+                    let bin = "\(fnmBase)/\(v)/installation/bin"
+                    searchPaths.append("\(bin)/openclaw")
+                    nodeBinPaths.insert(bin, at: 0)
+                }
+            }
+
+            // nvm: ~/.nvm/versions/node/*/bin
+            let nvmBase = "\(home)/.nvm/versions/node"
+            if let versions = try? fm.contentsOfDirectory(atPath: nvmBase) {
+                let sorted = versions.sorted().reversed()
+                for v in sorted {
+                    let bin = "\(nvmBase)/\(v)/bin"
+                    searchPaths.append("\(bin)/openclaw")
+                    nodeBinPaths.insert(bin, at: 0)
+                }
+            }
+
+            searchPaths += [
+                "/opt/homebrew/bin/openclaw",
+                "/usr/local/bin/openclaw",
+                "\(home)/.npm-global/bin/openclaw",
+                "/usr/bin/openclaw",
+            ]
+
+            guard let openclawPath = searchPaths.first(where: { !$0.isEmpty && fm.fileExists(atPath: $0) }) else {
+                await MainActor.run {
+                    gatewayRestartStatus = "❌ 找不到 openclaw，请在设置中指定路径"
+                    isRestartingGateway = false
+                }
+                return
+            }
+
+            process.executableURL = URL(fileURLWithPath: openclawPath)
+            process.arguments = ["gateway", "restart"]
+            process.standardOutput = pipe
+            process.standardError = pipe
+
+            // GUI 应用的 PATH 不包含 fnm/nvm/homebrew，需要补充以支持 #!/usr/bin/env node
+            let existingPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
+            let extraPaths = nodeBinPaths.filter { fm.fileExists(atPath: $0) }
+            process.environment = ProcessInfo.processInfo.environment
+            process.environment?["PATH"] = (extraPaths + [existingPath]).joined(separator: ":")
+            
+            do {
+                try process.run()
+                process.waitUntilExit()
+                let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                
+                await MainActor.run {
+                    if process.terminationStatus == 0 {
+                        gatewayRestartStatus = "✅ 重启成功"
+                    } else {
+                        gatewayRestartStatus = "❌ 失败: \(output.prefix(60))"
+                    }
+                    isRestartingGateway = false
+                    
+                    // 3秒后清除状态文字
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        gatewayRestartStatus = ""
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    gatewayRestartStatus = "❌ \(error.localizedDescription)"
+                    isRestartingGateway = false
+                }
+            }
+        }
     }
     
     /// 打开目录选择对话框，让用户选择 WhisperKit 模型所在文件夹

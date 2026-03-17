@@ -228,10 +228,10 @@ class ChatManager: ObservableObject {
                     let granted = await wakeWordDetector.requestMicrophonePermission()
                     guard granted else {
                         debugLog("[CM] ⚠️ 麦克风权限被拒绝")
-                        await MainActor.run { self.voiceWakeEnabled = false }
+                        DispatchQueue.main.async { self.voiceWakeEnabled = false }
                         return
                     }
-                    await MainActor.run {
+                    DispatchQueue.main.async {
                         self.wakeWordDetector.isPaused = false
                         self.wakeWordDetector.startDetecting()
                     }
@@ -402,7 +402,18 @@ class ChatManager: ObservableObject {
 
         debugLog("[Sessions] Loaded \(availableSessions.count) sessions")
     }
-    
+
+    /// 重置当前 session（通过 WebSocket 发送 /reset 命令，由网关处理）
+    func resetCurrentSession() {
+        debugLog("[Sessions] Resetting session '\(sessionKey)' via /reset command")
+        Task {
+            await connection.sendChat("/reset", sessionKey: sessionKey)
+        }
+        // 清空本地聊天记录
+        messages.removeAll()
+        messages.append(ChatMessage(content: "会话已重置", isUser: false))
+    }
+
     /// WhisperKit CoreML 模型根目录（可在设置中自定义，持久化到 UserDefaults）
     @Published var modelBasePath: String = {
         if let saved = UserDefaults.standard.string(forKey: "modelBasePath"), !saved.isEmpty {
@@ -491,6 +502,10 @@ class ChatManager: ObservableObject {
 
     /// 是否正在接收流式响应（首个 delta 到 final 之间为 true）
     private var isReceivingResponse = false
+    
+    /// Agent 是否正在后台运行（thinking/running 到 done/idle 之间为 true）
+    /// 用于 TTS 播完后判断应切换到 thinking 还是 idle
+    private var isAgentRunning = false
     
     // ── 语音识别（WhisperKit） ──
 
@@ -613,38 +628,37 @@ class ChatManager: ObservableObject {
         ChatManager.latestInstanceId = instanceId
         debugLog("[CM] Init instance \(instanceId.uuidString.prefix(8)), now active")
         
-        // 显示连接中占位消息
-        messages.append(ChatMessage(content: "连接中...", isUser: false))
-        
-        // 在后台建立 WebSocket 连接
-        Task {
-            await startConnection()
-        }
-
         // 将模型路径同步给唤醒词检测器
         wakeWordDetector.modelBasePath = modelBasePath
 
         // 设置唤醒词检测器回调
         wakeWordDetector.onModelLoaded = { [weak self] in
-            Task { @MainActor in
-                self?.isWakeModelLoaded = true
-            }
+            DispatchQueue.main.async { self?.isWakeModelLoaded = true }
         }
         wakeWordDetector.onWakeWordDetected = { [weak self] in
-            Task { @MainActor in
-                self?.handleWakeWordDetected()
-            }
+            DispatchQueue.main.async { self?.handleWakeWordDetected() }
         }
 
-        // 先加载主 WhisperKit 模型，然后共享给唤醒词检测器（避免两份模型占用双倍内存）
-        Task {
-            await setupWhisperKit()
-            // 主模型加载完毕，共享给唤醒词检测器
-            await wakeWordDetector.setup(sharedWhisperKit: self.whisperKit)
-            if voiceWakeEnabled {
-                wakeWordDetector.isPaused = false
-                wakeWordDetector.startDetecting()
-                debugLog("[CM] Wake word detector started (voiceWakeEnabled=true)")
+        // 延迟到下一个 run loop 执行，避免在 @StateObject init 期间修改 @Published 属性
+        // （SwiftUI 在视图 body 计算期间创建 @StateObject，此时修改 @Published 会触发警告）
+        DispatchQueue.main.async { [self] in
+            // 显示连接中占位消息
+            self.messages.append(ChatMessage(content: "连接中...", isUser: false))
+
+            // 在后台建立 WebSocket 连接
+            Task {
+                await self.startConnection()
+            }
+
+            // 先加载主 WhisperKit 模型，然后共享给唤醒词检测器
+            Task {
+                await self.setupWhisperKit()
+                await self.wakeWordDetector.setup(sharedWhisperKit: self.whisperKit)
+                if self.voiceWakeEnabled {
+                    self.wakeWordDetector.isPaused = false
+                    self.wakeWordDetector.startDetecting()
+                    debugLog("[CM] Wake word detector started (voiceWakeEnabled=true)")
+                }
             }
         }
 
@@ -719,7 +733,8 @@ class ChatManager: ObservableObject {
     /// 启动 WebSocket 连接，设置事件回调并连接到 Gateway
     private func startConnection() async {
         await connection.setOnEvent { [weak self] event in
-            Task { @MainActor [weak self] in
+            // 延迟到下一个 run loop，避免在 SwiftUI 视图更新期间修改 @Published 属性
+            DispatchQueue.main.async { [weak self] in
                 self?.handleConnectionEvent(event)
             }
         }
@@ -798,8 +813,8 @@ class ChatManager: ObservableObject {
                     enqueueTTS(text)
                 }
             } else if !hasSentTTS {
-                // 空响应或特殊指令 → 直接回到 idle
-                state = .idle
+                // 空响应或特殊指令 → 根据 agent 状态决定
+                state = isAgentRunning ? .thinking : .idle
             }
             hasSentTTS = false
             isReceivingResponse = false
@@ -824,11 +839,14 @@ class ChatManager: ObservableObject {
             
         case .agentThinking:
             print("[CM] agentThinking (current state=\(state))")
-            // 不覆盖 speaking 状态（TTS 可能还在播放上一条消息）
+            isAgentRunning = true
+            // 不覆盖 speaking 状态（TTS 可能还在播放）
+            // 但标记了 isAgentRunning，TTS 播完后会自动切到 thinking
             if state != .speaking { state = .thinking }
             
         case .agentDone:
             print("[CM] agentDone (current state=\(state))")
+            isAgentRunning = false
             if state == .thinking { state = .idle }
             
         case .messageSent(let runId):
@@ -857,13 +875,16 @@ class ChatManager: ObservableObject {
             showError("未连接到服务器")
             return
         }
-        
-        let displayText = text.isEmpty ? "[图片]" : text
-        messages.append(ChatMessage(content: displayText, isUser: true, images: images))
-        state = .thinking
-        
+
         debugLog("[CM] 📤 发送消息: '\(text.prefix(50))' (图片: \(images.count))")
-        
+
+        // 延迟修改 @Published 属性，避免在 SwiftUI 视图更新期间触发状态变更
+        let displayText = text.isEmpty ? "[图片]" : text
+        DispatchQueue.main.async {
+            self.messages.append(ChatMessage(content: displayText, isUser: true, images: images))
+            self.state = .thinking
+        }
+
         Task {
             if !images.isEmpty {
                 // 每张图片作为独立消息发送，防止单条超过 Gateway 的 512KB 限制
@@ -878,12 +899,12 @@ class ChatManager: ObservableObject {
                     }
                     let attachment = [["type": "image", "mimeType": img.mimeType, "fileName": img.fileName, "content": img.data.base64EncodedString()]]
                     debugLog("[CM] Sending image \(i + 1)/\(images.count), fileName=\(img.fileName)")
-                    await connection.sendChatWithAttachments(msg, attachments: attachment)
+                    await connection.sendChatWithAttachments(msg, attachments: attachment, sessionKey: sessionKey)
                 }
                 debugLog("[CM] All \(images.count) image(s) sent")
             } else {
                 // 纯文字消息
-                await connection.sendChat(text)
+                await connection.sendChat(text, sessionKey: sessionKey)
             }
         }
     }
@@ -933,13 +954,15 @@ class ChatManager: ObservableObject {
                 await self.speakWithSystem(sentence)
             }
             
-            // 管道队列耗尽 → 切换回 idle 状态
+            // 管道队列耗尽 → 根据 agent 状态切换
             guard let self else { return }
-            debugLog("[TTS] Pipeline finished")
+            debugLog("[TTS] Pipeline finished (isAgentRunning=\(self.isAgentRunning))")
             self.ttsContinuation = nil
             self.ttsPipelineTask = nil
             if self.state == .speaking {
-                self.state = .idle
+                // Agent 还在后台跑工具 → 切到 thinking（显示思考动画）
+                // Agent 已完成 → 切到 idle
+                self.state = self.isAgentRunning ? .thinking : .idle
             }
         }
     }
@@ -1033,11 +1056,12 @@ class ChatManager: ObservableObject {
                 whisperKit = try await WhisperKit(config)
                 whisperReady = true
                 debugLog("[Whisper] ✅ Model '\(modelName)' loaded successfully!")
-                await MainActor.run { self.isMainModelLoaded = true }
-                
+                DispatchQueue.main.async { self.isMainModelLoaded = true }
+
                 // 加载成功后在聊天记录中显示提示
-                await MainActor.run {
-                    messages.append(ChatMessage(content: "🎤 语音模型 (\(modelName)) 已加载", isUser: false))
+                let name = modelName
+                DispatchQueue.main.async {
+                    self.messages.append(ChatMessage(content: "🎤 语音模型 (\(name)) 已加载", isUser: false))
                 }
                 return
             } catch {
@@ -1047,8 +1071,8 @@ class ChatManager: ObservableObject {
         
         // 所有模型都失败
         debugLog("[Whisper] All models failed to load!")
-        await MainActor.run {
-            messages.append(ChatMessage(content: "⚠️ 语音模型加载失败，请检查网络连接", isUser: false))
+        DispatchQueue.main.async {
+            self.messages.append(ChatMessage(content: "⚠️ 语音模型加载失败，请检查网络连接", isUser: false))
         }
     }
     
@@ -1390,8 +1414,10 @@ class ChatManager: ObservableObject {
     /// 显示错误消息，2 秒后自动恢复为 idle 状态
     /// - Parameter message: 错误描述文字（将在消息中加 ⚠️ 前缀）
     private func showError(_ message: String) {
-        state = .error
-        messages.append(ChatMessage(content: "⚠️ \(message)", isUser: false))
+        DispatchQueue.main.async {
+            self.state = .error
+            self.messages.append(ChatMessage(content: "⚠️ \(message)", isUser: false))
+        }
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             self?.state = .idle
@@ -1583,13 +1609,15 @@ actor WebSocketConnection {
     // MARK: - Send Chat
     
     /// 发送纯文字聊天消息
-    /// - Parameter text: 消息文字内容
-    func sendChat(_ text: String) {
+    /// - Parameters:
+    ///   - text: 消息文字内容
+    ///   - sessionKey: 目标 session key（可选，默认使用 config 中的值）
+    func sendChat(_ text: String, sessionKey: String? = nil) {
         let id = nextRequestId()
         let idempotencyKey = UUID().uuidString  // 幂等键，防止重复发送
-        
+
         let params: [String: Any] = [
-            "sessionKey": config.sessionKey,
+            "sessionKey": sessionKey ?? config.sessionKey,
             "message": text,
             "idempotencyKey": idempotencyKey
         ]
@@ -1610,15 +1638,15 @@ actor WebSocketConnection {
     /// - Parameters:
     ///   - text: 消息文字
     ///   - attachments: 附件数组，每项含 type/mimeType/fileName/content(base64)
-    func sendChatWithAttachments(_ text: String, attachments: [[String: String]]) {
+    func sendChatWithAttachments(_ text: String, attachments: [[String: String]], sessionKey: String? = nil) {
         let id = nextRequestId()
         let idempotencyKey = UUID().uuidString
-        
+
         // 转换为 [String: Any] 确保 JSON 序列化正确
         let anyAttachments: [[String: Any]] = attachments.map { $0 as [String: Any] }
-        
+
         let params: [String: Any] = [
-            "sessionKey": config.sessionKey,
+            "sessionKey": sessionKey ?? config.sessionKey,
             "message": text,
             "attachments": anyAttachments,
             "idempotencyKey": idempotencyKey
@@ -1679,7 +1707,7 @@ actor WebSocketConnection {
             "maxProtocol": config.protocolVersion,
             "client": clientInfo,
             "role": "operator",
-            "scopes": ["operator.admin", "operator.read"],
+            "scopes": ["operator.admin", "operator.read", "operator.write"],
             "caps": [] as [String],
             "commands": [] as [String],
             "permissions": [:] as [String: Any],
@@ -1687,15 +1715,48 @@ actor WebSocketConnection {
             "userAgent": "clawdavatar-macos/1.0.0"
         ]
         
-        // 认证策略：有设备 token 则双重认证，否则仅用 gateway token
-        if !config.deviceToken.isEmpty {
-            params["auth"] = ["deviceToken": config.deviceToken, "token": config.gatewayToken]
+        // 认证策略：优先使用设备身份认证（完整 scopes），回退到 gateway token
+        let requestedScopes = params["scopes"] as? [String] ?? []
+        if !config.deviceId.isEmpty && !config.devicePrivateKeyPem.isEmpty && !config.deviceToken.isEmpty,
+           let nonce = challengeNonce {
+            // 设备身份认证：签名 challenge + 发送 device 信息（顶层字段）
+            let signedAt = Int64(Date().timeIntervalSince1970 * 1000)
+            if let signature = signChallenge(nonce: nonce, signedAt: signedAt) {
+                // 从 PEM 提取 raw public key（去掉 PEM 头尾 + SPKI 包装，取末尾 32 字节 Ed25519 key）
+                let rawPubKey: String = {
+                    let stripped = config.devicePublicKeyPem
+                        .replacingOccurrences(of: "-----BEGIN PUBLIC KEY-----", with: "")
+                        .replacingOccurrences(of: "-----END PUBLIC KEY-----", with: "")
+                        .replacingOccurrences(of: "\n", with: "")
+                        .trimmingCharacters(in: .whitespaces)
+                    if let derData = Data(base64Encoded: stripped), derData.count >= 32 {
+                        // SPKI 格式 Ed25519: 前 12 字节是 ASN.1 头，后 32 字节是 raw key
+                        let rawKey = derData.suffix(32)
+                        // 转换为 URL-safe base64（无 padding）
+                        return rawKey.base64EncodedString()
+                            .replacingOccurrences(of: "+", with: "-")
+                            .replacingOccurrences(of: "/", with: "_")
+                            .replacingOccurrences(of: "=", with: "")
+                    }
+                    return stripped
+                }()
+                params["device"] = [
+                    "id": config.deviceId,
+                    "publicKey": rawPubKey,
+                    "signature": signature,
+                    "signedAt": signedAt,
+                    "nonce": nonce
+                ] as [String: Any]
+                params["auth"] = ["deviceToken": config.deviceToken, "token": config.gatewayToken]
+                debugLog("[WS] sendConnect: scopes=\(requestedScopes), auth=device(\(config.deviceId.prefix(8))...)")
+            } else {
+                params["auth"] = ["token": config.gatewayToken]
+                debugLog("[WS] sendConnect: scopes=\(requestedScopes), auth=gatewayToken (sign failed)")
+            }
         } else if !config.gatewayToken.isEmpty {
             params["auth"] = ["token": config.gatewayToken]
+            debugLog("[WS] sendConnect: scopes=\(requestedScopes), auth=gatewayToken")
         }
-        
-        // 本地连接使用 gateway token 认证，无需设备签名
-        debugLog("[WS] sendConnect: using gateway token auth (no device signature)")
         
         let request: [String: Any] = [
             "type": "req",
@@ -1721,7 +1782,7 @@ actor WebSocketConnection {
         }
         
         // 构建 v2 签名载荷
-        let scopes = "operator.admin,operator.read"
+        let scopes = "operator.admin,operator.read,operator.write"
         let payload = "v2|\(config.deviceId)|openclaw-macos|ui|operator|\(scopes)|\(signedAt)|\(config.gatewayToken)|\(nonce)"
         
         debugLog("[WS] signChallenge payload: \(payload.prefix(120))...")
@@ -1813,6 +1874,10 @@ actor WebSocketConnection {
         if ok {
             switch requestType {
             case .connect:
+                if let payload = json["payload"] as? [String: Any] {
+                    let policy = payload["policy"] as? [String: Any]
+                    debugLog("[WS] connect OK: policy=\(policy ?? [:]), type=\(payload["type"] ?? "?")")
+                }
                 emit(.connected)
             case .chat:
                 let runId = (json["payload"] as? [String: Any])?["runId"] as? String

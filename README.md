@@ -38,18 +38,43 @@ English | [中文](README_CN.md)
 - **macOS 14.0+** (Sonoma or later)
 - **Apple Silicon** (M1/M2/M3/M4) — required for WhisperKit CoreML models
 - **Xcode 16+** — to build the project
-- **[OpenClaw](https://github.com/openclaw/openclaw)** — running gateway on your machine or network
+- **Node.js 18+** — required by OpenClaw (install via [fnm](https://github.com/Schniz/fnm), [nvm](https://github.com/nvm-sh/nvm), or [Homebrew](https://brew.sh))
+- **[OpenClaw](https://github.com/openclaw/openclaw)** — fully installed and configured on your machine (see below)
 
 ## 🚀 Quick Start
 
-### 1. Clone the repo
+### 1. Install & configure OpenClaw
+
+Clawgirl is a desktop frontend for [OpenClaw](https://github.com/openclaw/openclaw). You need a fully working OpenClaw installation before using Clawgirl:
+
+```bash
+# Install OpenClaw globally
+npm install -g openclaw
+
+# Run initial setup (creates ~/.openclaw/ config directory)
+openclaw setup
+
+# Start the gateway (default port 18789)
+openclaw gateway start
+```
+
+After setup, OpenClaw creates the following files that Clawgirl reads automatically:
+
+| File | Purpose |
+|------|---------|
+| `~/.openclaw/openclaw.json` | Gateway token (auto-loaded on first launch) |
+| `~/.openclaw/agents/main/sessions/sessions.json` | Session list (populates the session picker) |
+
+> **Note:** The gateway must be running for Clawgirl to connect. You can check status with `openclaw gateway status` and restart from the app's settings panel.
+
+### 2. Clone the repo
 
 ```bash
 git clone https://github.com/MrRRRabbit/clawgirl.git
 cd clawgirl
 ```
 
-### 2. Download WhisperKit models
+### 3. Download WhisperKit models
 
 Clawgirl uses WhisperKit for on-device speech recognition. You need to download the CoreML models first:
 
@@ -72,7 +97,7 @@ huggingface-cli download argmaxinc/whisperkit-coreml \
 
 > **💡 Tip:** If you want faster startup and don't need high accuracy, you can use `openai_whisper-base` or `openai_whisper-small` only. The app will automatically fall back to smaller models.
 
-### 3. Build & Run
+### 4. Build & Run
 
 Open `Clawgirl.xcodeproj` in Xcode, then:
 
@@ -80,7 +105,7 @@ Open `Clawgirl.xcodeproj` in Xcode, then:
 2. Select your Mac as the run destination
 3. Press `⌘R` to build and run
 
-### 4. Configure
+### 5. Configure
 
 Click the ⚙️ gear icon in the app to configure:
 
@@ -88,14 +113,14 @@ Click the ⚙️ gear icon in the app to configure:
 |---------|-------------|---------|
 | **Gateway URL** | Your OpenClaw gateway WebSocket address | `ws://127.0.0.1:18789` |
 | **Gateway Token** | Authentication token from `~/.openclaw/openclaw.json` | Auto-detected |
-| **Session Key** | Which OpenClaw session to connect to | `main` |
+| **Session** | Which OpenClaw session to use (dropdown, auto-loaded from `~/.openclaw`) | `main` |
 | **Model Path** | Where WhisperKit CoreML models are stored | `~/Documents/huggingface/models/argmaxinc/whisperkit-coreml` |
 | **Wake Words** | Words that trigger voice input | 小虾, 小夏, 小瞎, ... |
-| **TTS Voice** | Text-to-speech voice (select from macOS voices) | Tingting (built-in) |
+| **TTS Voice** | Chinese and English TTS voices (select from macOS voices) | Wing (Premium) |
 
 > **Note:** The gateway token is automatically loaded from your local OpenClaw config (`~/.openclaw/openclaw.json`) on first launch. You only need to set it manually if you're connecting to a remote gateway.
 
-> **Note:** Connection settings (Gateway URL, Token, Session) require an app restart to take effect.
+> **Note:** Gateway URL and Token changes require an app restart to take effect. Session switching works immediately.
 
 ## 🎙️ How Voice Wake Works
 
@@ -186,12 +211,12 @@ The app needs microphone permission. If the system prompt didn't appear:
 2. Enable Clawgirl
 
 ### TTS voice sounds robotic
-Clawgirl defaults to **Tingting** (built-in compact voice). For better quality, download a Premium voice:
+Clawgirl defaults to **Wing** (Premium, Chinese - Hong Kong), which handles both Chinese and English well. If you haven't downloaded this voice:
 1. Open **System Settings → Accessibility → Spoken Content → System Voice → Manage Voices...**
 2. Search for "Wing" (Chinese - Hong Kong) and click the download button
-3. You can also download other Premium/Enhanced voices for better quality
+3. You can also download other Premium/Enhanced voices and select them in the app's settings
 
-The app will fall back to built-in compact voices if Premium voices aren't installed — they work, but sound less natural.
+The app will fall back to available system voices if the configured voice isn't installed.
 
 ### Wake word not detecting
 - Check that the 👂 ear icon is active (turquoise)
@@ -210,6 +235,29 @@ xattr -cr /path/to/Clawgirl.app
 - Ensure OpenClaw gateway is running (`openclaw gateway status`)
 - Check the gateway URL and token in ⚙️ settings
 - Default gateway port is `18789`
+
+## 🔗 Dependencies
+
+### Runtime
+| Dependency | Purpose | Required |
+|------------|---------|:---:|
+| [OpenClaw](https://github.com/openclaw/openclaw) | AI agent gateway (WebSocket backend) | **Yes** |
+| Node.js 18+ | Runtime for OpenClaw | **Yes** |
+| macOS Premium TTS voices | High-quality speech synthesis | Recommended |
+
+### Build (Swift Package Manager, auto-resolved)
+| Package | Purpose |
+|---------|---------|
+| [WhisperKit](https://github.com/argmaxinc/WhisperKit) | On-device speech recognition for Apple Silicon |
+| [RealTimeCutVADLibrary](https://github.com/sakits/RealTimeCutVADLibrary) | Silero VAD v5 for voice activity detection |
+
+### ML Models (manual download)
+| Model | Size | Purpose |
+|-------|------|---------|
+| `openai_whisper-large-v3` | ~3 GB | Main speech transcription (highest accuracy) |
+| `openai_whisper-small` | ~500 MB | Wake word detection (lightweight) |
+
+> The app auto-falls back through `large-v3 → small → base → tiny` for transcription, and `small → base → tiny` for wake word detection. Only models you've downloaded will be used.
 
 ## 🤝 Credits
 
