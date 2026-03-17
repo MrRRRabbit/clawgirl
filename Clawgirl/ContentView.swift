@@ -257,7 +257,7 @@ struct ContentView: View {
                 .padding(.bottom, 4)
                 
                 // 聊天记录列表
-                ChatHistoryView(messages: chatManager.messages)
+                ChatHistoryView()
                     .padding(.horizontal, 12)
                 
                 // 输入区域：文字输入框 + 麦克风按钮 + 发送按钮 + 图片附件
@@ -616,26 +616,23 @@ struct LobsterAvatarView: View {
 
 /// 聊天记录列表：自动滚动到最新消息
 struct ChatHistoryView: View {
-    /// 要显示的消息数组（来自 ChatManager）
-    let messages: [ChatMessage]
-    
+    /// 通过 EnvironmentObject 直接读取，避免每次数组值拷贝触发全量重建
+    @EnvironmentObject private var chatManager: ChatManager
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(messages) { message in
+                    ForEach(chatManager.messages) { message in
                         MessageBubble(message: message)
                             .id(message.id)
                     }
                 }
                 .padding(.vertical, 8)
             }
-            // 消息数量变化时自动滚动到最新消息
-            .onChange(of: messages.count) {
-                if let last = messages.last {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
+            .onChange(of: chatManager.messages.count) {
+                if let last = chatManager.messages.last {
+                    proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
         }
@@ -1170,7 +1167,7 @@ struct SettingsPopoverView: View {
                     }
                 }
                 
-                // 当前连接状态指示灯
+                // 当前连接状态 + 重启网关按钮
                 HStack(spacing: 4) {
                     Circle()
                         .fill(chatManager.isConnected ? Color.green : Color.red)
@@ -1178,66 +1175,25 @@ struct SettingsPopoverView: View {
                     Text(chatManager.isConnected ? "已连接" : "未连接")
                         .font(.caption2)
                         .foregroundColor(.secondary)
+                    Spacer()
+                    if !gatewayRestartStatus.isEmpty {
+                        Text(gatewayRestartStatus)
+                            .font(.caption2)
+                            .foregroundColor(gatewayRestartStatus.contains("✅") ? .green : .orange)
+                    }
+                    Button(action: { restartGateway() }) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isRestartingGateway)
+                    .help("重启网关")
                 }
-                
-                // 提示：部分设置需重启生效
+
                 Text("修改后需重启 App 生效")
                     .font(.caption2)
                     .foregroundColor(.orange.opacity(0.8))
             }
-            
-            Divider()
-            
-            // ── 网关操作区域 ──
-            Text("网关操作")
-                .font(.headline)
-            
-            HStack {
-                Button(action: { restartGateway() }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                        Text("重启网关")
-                    }
-                    .font(.system(size: 12))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.2)))
-                }
-                .buttonStyle(.plain)
-                .disabled(isRestartingGateway)
-                
-                if isRestartingGateway {
-                    ProgressView()
-                        .scaleEffect(0.6)
-                    Text(gatewayRestartStatus)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                } else if !gatewayRestartStatus.isEmpty {
-                    Text(gatewayRestartStatus)
-                        .font(.caption2)
-                        .foregroundColor(gatewayRestartStatus.contains("✅") ? .green : .red)
-                }
-            }
-            
-            HStack {
-                Text("CLI")
-                    .font(.caption)
-                    .frame(width: 40, alignment: .leading)
-                TextField("自动探测", text: $openclawCustomPath)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11, design: .monospaced))
-                    .onChange(of: openclawCustomPath) {
-                        let trimmed = openclawCustomPath.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if trimmed.isEmpty {
-                            UserDefaults.standard.removeObject(forKey: "openclawPath")
-                        } else {
-                            UserDefaults.standard.set(trimmed, forKey: "openclawPath")
-                        }
-                    }
-            }
-            Text("留空则自动探测 openclaw 路径")
-                .font(.caption2)
-                .foregroundColor(.secondary)
             
             Divider()
             
@@ -1301,89 +1257,16 @@ struct SettingsPopoverView: View {
     private func restartGateway() {
         isRestartingGateway = true
         gatewayRestartStatus = "重启中..."
-        
+
         Task {
-            let process = Process()
-            let pipe = Pipe()
+            chatManager.restartGateway()
             
-            // 按优先级搜索 openclaw 可执行文件
-            let home = FileManager.default.homeDirectoryForCurrentUser.path
-            let fm = FileManager.default
-
-            // 动态搜索 fnm/nvm 安装的 node 版本目录（取最新版本）
-            var searchPaths = [UserDefaults.standard.string(forKey: "openclawPath") ?? ""]
-            var nodeBinPaths: [String] = ["/opt/homebrew/bin", "/usr/local/bin"]
-
-            // fnm: ~/.local/share/fnm/node-versions/*/installation/bin
-            let fnmBase = "\(home)/.local/share/fnm/node-versions"
-            if let versions = try? fm.contentsOfDirectory(atPath: fnmBase) {
-                let sorted = versions.sorted().reversed()  // 最新版本优先
-                for v in sorted {
-                    let bin = "\(fnmBase)/\(v)/installation/bin"
-                    searchPaths.append("\(bin)/openclaw")
-                    nodeBinPaths.insert(bin, at: 0)
-                }
-            }
-
-            // nvm: ~/.nvm/versions/node/*/bin
-            let nvmBase = "\(home)/.nvm/versions/node"
-            if let versions = try? fm.contentsOfDirectory(atPath: nvmBase) {
-                let sorted = versions.sorted().reversed()
-                for v in sorted {
-                    let bin = "\(nvmBase)/\(v)/bin"
-                    searchPaths.append("\(bin)/openclaw")
-                    nodeBinPaths.insert(bin, at: 0)
-                }
-            }
-
-            searchPaths += [
-                "/opt/homebrew/bin/openclaw",
-                "/usr/local/bin/openclaw",
-                "\(home)/.npm-global/bin/openclaw",
-                "/usr/bin/openclaw",
-            ]
-
-            guard let openclawPath = searchPaths.first(where: { !$0.isEmpty && fm.fileExists(atPath: $0) }) else {
-                await MainActor.run {
-                    gatewayRestartStatus = "❌ 找不到 openclaw，请在设置中指定路径"
-                    isRestartingGateway = false
-                }
-                return
-            }
-
-            process.executableURL = URL(fileURLWithPath: openclawPath)
-            process.arguments = ["gateway", "restart"]
-            process.standardOutput = pipe
-            process.standardError = pipe
-
-            // GUI 应用的 PATH 不包含 fnm/nvm/homebrew，需要补充以支持 #!/usr/bin/env node
-            let existingPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
-            let extraPaths = nodeBinPaths.filter { fm.fileExists(atPath: $0) }
-            process.environment = ProcessInfo.processInfo.environment
-            process.environment?["PATH"] = (extraPaths + [existingPath]).joined(separator: ":")
-            
-            do {
-                try process.run()
-                process.waitUntilExit()
-                let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                
-                await MainActor.run {
-                    if process.terminationStatus == 0 {
-                        gatewayRestartStatus = "✅ 重启成功"
-                    } else {
-                        gatewayRestartStatus = "❌ 失败: \(output.prefix(60))"
-                    }
-                    isRestartingGateway = false
-                    
-                    // 3秒后清除状态文字
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        gatewayRestartStatus = ""
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    gatewayRestartStatus = "❌ \(error.localizedDescription)"
-                    isRestartingGateway = false
+            // /restart 发送后网关会断开连接并重启，等待重连
+            DispatchQueue.main.async {
+                gatewayRestartStatus = "✅ 已发送重启命令"
+                isRestartingGateway = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    gatewayRestartStatus = ""
                 }
             }
         }

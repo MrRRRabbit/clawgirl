@@ -174,12 +174,23 @@ class ChatManager: ObservableObject {
     /// 状态变化时触发 handleStateChange 管理唤醒词检测器的暂停/恢复
     @Published var state: ChatState = .idle {
         didSet {
+            guard state != oldValue else { return }
             handleStateChange(from: oldValue, to: state)
         }
     }
 
     /// 聊天消息历史列表，追加新消息时 UI 自动滚动到底部
+    /// 超过 maxMessages 条时自动移除旧消息，防止内存无限增长
     @Published var messages: [ChatMessage] = []
+    private let maxMessages = 200
+
+    /// 追加消息并自动裁剪
+    private func appendMessage(_ msg: ChatMessage) {
+        messages.append(msg)
+        if messages.count > maxMessages {
+            messages.removeFirst(messages.count - maxMessages)
+        }
+    }
 
     /// 当前语音识别结果（临时），InputAreaView 读取后填入输入框并清空
     @Published var currentTranscription: String = ""
@@ -411,7 +422,15 @@ class ChatManager: ObservableObject {
         }
         // 清空本地聊天记录
         messages.removeAll()
-        messages.append(ChatMessage(content: "会话已重置", isUser: false))
+        appendMessage(ChatMessage(content: "会话已重置", isUser: false))
+    }
+
+    /// 重启网关（通过 WebSocket 发送 /restart 命令）
+    func restartGateway() {
+        debugLog("[Gateway] Restarting via /restart command")
+        Task {
+            await connection.sendChat("/restart", sessionKey: sessionKey)
+        }
     }
 
     /// WhisperKit CoreML 模型根目录（可在设置中自定义，持久化到 UserDefaults）
@@ -643,7 +662,7 @@ class ChatManager: ObservableObject {
         // （SwiftUI 在视图 body 计算期间创建 @StateObject，此时修改 @Published 会触发警告）
         DispatchQueue.main.async { [self] in
             // 显示连接中占位消息
-            self.messages.append(ChatMessage(content: "连接中...", isUser: false))
+            self.appendMessage(ChatMessage(content: "连接中...", isUser: false))
 
             // 在后台建立 WebSocket 连接
             Task {
@@ -755,12 +774,12 @@ class ChatManager: ObservableObject {
             if !wasConnected {
                 // 首次连接显示欢迎语，重连则显示重连通知
                 if messages.isEmpty || messages.allSatisfy({ $0.content.hasPrefix("⚠️") }) {
-                    messages.append(ChatMessage(
+                    appendMessage(ChatMessage(
                         content: "嘿！我是龙虾娘波波～按住麦克风跟我说话，或者直接打字都行！🦞",
                         isUser: false
                     ))
                 } else {
-                    messages.append(ChatMessage(content: "🔄 已重新连接", isUser: false))
+                    appendMessage(ChatMessage(content: "🔄 已重新连接", isUser: false))
                 }
             }
             
@@ -785,7 +804,7 @@ class ChatManager: ObservableObject {
                 return
             }
             debugLog("[CM] chatSentence: '\(sentence.prefix(50))' (hasSentTTS=\(hasSentTTS))")
-            state = .speaking
+            if state != .speaking { state = .speaking }
             hasSentTTS = true
             // 将句子推送到 TTS 管道
             enqueueTTS(sentence)
@@ -806,7 +825,7 @@ class ChatManager: ObservableObject {
             
             if !text.isEmpty && text != "HEARTBEAT_OK" && text != "NO_REPLY" {
                 // 将完整响应文字添加到聊天记录
-                messages.append(ChatMessage(content: text, isUser: false))
+                appendMessage(ChatMessage(content: text, isUser: false))
                 if !hasSentTTS {
                     // 没有通过 chatSentence 路径发过 TTS → 在 final 时整段播放
                     state = .speaking
@@ -881,7 +900,7 @@ class ChatManager: ObservableObject {
         // 延迟修改 @Published 属性，避免在 SwiftUI 视图更新期间触发状态变更
         let displayText = text.isEmpty ? "[图片]" : text
         DispatchQueue.main.async {
-            self.messages.append(ChatMessage(content: displayText, isUser: true, images: images))
+            self.appendMessage(ChatMessage(content: displayText, isUser: true, images: images))
             self.state = .thinking
         }
 
@@ -1061,7 +1080,7 @@ class ChatManager: ObservableObject {
                 // 加载成功后在聊天记录中显示提示
                 let name = modelName
                 DispatchQueue.main.async {
-                    self.messages.append(ChatMessage(content: "🎤 语音模型 (\(name)) 已加载", isUser: false))
+                    self.appendMessage(ChatMessage(content: "🎤 语音模型 (\(name)) 已加载", isUser: false))
                 }
                 return
             } catch {
@@ -1072,7 +1091,7 @@ class ChatManager: ObservableObject {
         // 所有模型都失败
         debugLog("[Whisper] All models failed to load!")
         DispatchQueue.main.async {
-            self.messages.append(ChatMessage(content: "⚠️ 语音模型加载失败，请检查网络连接", isUser: false))
+            self.appendMessage(ChatMessage(content: "⚠️ 语音模型加载失败，请检查网络连接", isUser: false))
         }
     }
     
@@ -1099,7 +1118,7 @@ class ChatManager: ObservableObject {
         // WhisperKit 未就绪则提示用户等待
         guard whisperReady else {
             debugLog("[Speech] WhisperKit not ready yet")
-            messages.append(ChatMessage(content: "⚠️ 语音模型加载中，请稍等...", isUser: false))
+            appendMessage(ChatMessage(content: "⚠️ 语音模型加载中，请稍等...", isUser: false))
             isVoiceWakeTriggered = false
             state = .idle
             return
@@ -1416,7 +1435,7 @@ class ChatManager: ObservableObject {
     private func showError(_ message: String) {
         DispatchQueue.main.async {
             self.state = .error
-            self.messages.append(ChatMessage(content: "⚠️ \(message)", isUser: false))
+            self.appendMessage(ChatMessage(content: "⚠️ \(message)", isUser: false))
         }
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
