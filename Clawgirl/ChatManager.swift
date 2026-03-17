@@ -73,37 +73,12 @@ enum ChatState: Equatable {
 struct ImageAttachment: Equatable, Identifiable {
     /// 唯一标识符，用于列表渲染和删除操作
     let id = UUID()
-    /// 图片原始二进制数据（本地图片或已下载的远程图片）
-    var data: Data
+    /// 图片原始二进制数据
+    let data: Data
     /// 文件名（显示用，发送给 AI 时附带）
     let fileName: String
     /// MIME 类型（"image/png" / "image/jpeg" 等）
     let mimeType: String
-    /// 远程图片 URL（用于 AI 推送的图片）
-    var url: String?
-
-    /// 从 Gateway content block 解析图片附件
-    /// 支持 base64 source、直接 URL、image_url 格式
-    static func fromContentBlock(_ block: [String: Any]) -> ImageAttachment? {
-        // type: "image" with base64 source
-        if let source = block["source"] as? [String: Any],
-           let sourceType = source["type"] as? String, sourceType == "base64",
-           let dataStr = source["data"] as? String,
-           let imageData = Data(base64Encoded: dataStr.replacingOccurrences(of: "data:[^;]*;base64,", with: "", options: .regularExpression)) ?? Data(base64Encoded: dataStr) {
-            let mimeType = source["media_type"] as? String ?? "image/png"
-            return ImageAttachment(data: imageData, fileName: "image.\(mimeType.split(separator: "/").last ?? "png")", mimeType: mimeType)
-        }
-        // type: "image" with URL
-        if let urlStr = block["url"] as? String, !urlStr.isEmpty {
-            return ImageAttachment(data: Data(), fileName: URL(string: urlStr)?.lastPathComponent ?? "image.png", mimeType: "image/png", url: urlStr)
-        }
-        // type: "image_url" (OpenAI format)
-        if let imageUrl = block["image_url"] as? [String: Any],
-           let urlStr = imageUrl["url"] as? String, !urlStr.isEmpty {
-            return ImageAttachment(data: Data(), fileName: URL(string: urlStr)?.lastPathComponent ?? "image.png", mimeType: "image/png", url: urlStr)
-        }
-        return nil
-    }
 }
 
 // MARK: - Chat Message
@@ -118,8 +93,8 @@ struct ChatMessage: Identifiable, Equatable {
     let isUser: Bool
     /// 消息时间戳
     let timestamp: Date
-    /// 附带的图片列表（用户发送的附件或 AI 推送的图片）
-    var images: [ImageAttachment]
+    /// 附带的图片列表（仅用户消息可能有附件）
+    let images: [ImageAttachment]
     
     init(content: String, isUser: Bool, images: [ImageAttachment] = []) {
         self.content = content
@@ -208,28 +183,6 @@ class ChatManager: ObservableObject {
     /// 超过 maxMessages 条时自动移除旧消息，防止内存无限增长
     @Published var messages: [ChatMessage] = []
     private let maxMessages = 200
-
-    /// 异步下载 URL 图片并更新到对应消息的 ImageAttachment
-    private func downloadImage(at imageIndex: Int, in messageIndex: Int) {
-        guard messageIndex < messages.count,
-              imageIndex < messages[messageIndex].images.count,
-              let urlStr = messages[messageIndex].images[imageIndex].url,
-              let url = URL(string: urlStr) else { return }
-
-        Task {
-            do {
-                let (data, _) = try await URLSession.shared.data(from: url)
-                DispatchQueue.main.async {
-                    guard messageIndex < self.messages.count,
-                          imageIndex < self.messages[messageIndex].images.count else { return }
-                    self.messages[messageIndex].images[imageIndex].data = data
-                    debugLog("[Image] Downloaded \(data.count) bytes from \(urlStr.prefix(60))")
-                }
-            } catch {
-                debugLog("[Image] Download failed: \(error.localizedDescription)")
-            }
-        }
-    }
 
     /// 追加消息并自动裁剪
     private func appendMessage(_ msg: ChatMessage) {
@@ -856,8 +809,8 @@ class ChatManager: ObservableObject {
             // 将句子推送到 TTS 管道
             enqueueTTS(sentence)
             
-        case .chatFinal(let text, let images):
-            debugLog("[CM] chatFinal: \(text.count) chars, \(images.count) images, hasSentTTS=\(hasSentTTS), hashes=\(currentResponseSentenceHashes.count)")
+        case .chatFinal(let text):
+            debugLog("[CM] chatFinal: \(text.count) chars, hasSentTTS=\(hasSentTTS), hashes=\(currentResponseSentenceHashes.count)")
             // 防止重复处理 final（流式传输可能触发多次）
             guard !processingFinalDone else {
                 debugLog("[CM] chatFinal SKIPPED (duplicate)")
@@ -871,12 +824,8 @@ class ChatManager: ObservableObject {
             }
             
             if !text.isEmpty && text != "HEARTBEAT_OK" && text != "NO_REPLY" {
-                // 将完整响应文字（+ 图片附件）添加到聊天记录
-                appendMessage(ChatMessage(content: text, isUser: false, images: images))
-                // 异步下载 URL 图片
-                for (i, img) in images.enumerated() where img.url != nil {
-                    downloadImage(at: i, in: messages.count - 1)
-                }
+                // 将完整响应文字添加到聊天记录
+                appendMessage(ChatMessage(content: text, isUser: false))
                 if !hasSentTTS {
                     // 没有通过 chatSentence 路径发过 TTS → 在 final 时整段播放
                     state = .speaking
@@ -1507,8 +1456,8 @@ enum ConnectionEvent {
     case connectionFailed(String)
     /// 流式响应中的完整句子（可立即送 TTS 播放）
     case chatSentence(String)
-    /// 流式响应结束，包含完整文本和图片附件
-    case chatFinal(String, [ImageAttachment])
+    /// 流式响应结束，包含完整的最终文本
+    case chatFinal(String)
     /// 响应被中断（用户取消或服务端中断）
     case chatAborted
     /// 聊天发生错误
@@ -2018,18 +1967,12 @@ actor WebSocketConnection {
         case "final":
             // 最终响应：提取文本和图片块
             var finalText = ""
-            var imageAttachments: [ImageAttachment] = []
             if let message = payload["message"] as? [String: Any],
                let content = message["content"] as? [[String: Any]] {
                 for block in content {
-                    let blockType = block["type"] as? String ?? ""
-                    if blockType == "text", let text = block["text"] as? String {
+                    if block["type"] as? String == "text",
+                       let text = block["text"] as? String {
                         finalText += text
-                    } else if blockType == "image" || blockType == "image_url" {
-                        if let img = ImageAttachment.fromContentBlock(block) {
-                            imageAttachments.append(img)
-                            debugLog("[WS] final: found image block (\(img.url ?? "base64"), \(img.data.count) bytes)")
-                        }
                     }
                 }
             }
@@ -2040,7 +1983,7 @@ actor WebSocketConnection {
 
             // 发送 ttsSentIndex 之后尚未处理的剩余文本
             let remaining = String(finalText.dropFirst(ttsSentIndex)).trimmingCharacters(in: .whitespacesAndNewlines)
-            debugLog("[WS] final: total=\(finalText.count) chars, images=\(imageAttachments.count), remaining='\(remaining.prefix(80))'")
+            debugLog("[WS] final: total=\(finalText.count) chars, buffer=\(currentResponseBuffer.count) chars, remaining='\(remaining.prefix(80))'")
             if !remaining.isEmpty {
                 emit(.chatSentence(remaining))
             }
@@ -2048,7 +1991,7 @@ actor WebSocketConnection {
             // 重置缓冲区状态
             currentResponseBuffer = ""
             ttsSentIndex = 0
-            emit(.chatFinal(finalText, imageAttachments))
+            emit(.chatFinal(finalText))
             
         case "aborted":
             currentResponseBuffer = ""

@@ -654,24 +654,16 @@ struct MessageBubble: View {
             if message.isUser { Spacer(minLength: 60) }
             
             VStack(alignment: message.isUser ? .trailing : .leading, spacing: 4) {
-                // 图片附件（用户发送或 AI 推送）
+                // 如有图片附件，在文字上方显示图片预览
                 if !message.images.isEmpty {
-                    VStack(alignment: message.isUser ? .trailing : .leading, spacing: 4) {
+                    HStack(spacing: 4) {
                         ForEach(message.images) { img in
-                            if !img.data.isEmpty, let nsImage = NSImage(data: img.data) {
-                                // 已有图片数据（本地或已下载）
+                            if let nsImage = NSImage(data: img.data) {
                                 Image(nsImage: nsImage)
                                     .resizable()
                                     .scaledToFit()
-                                    .frame(maxWidth: 280, maxHeight: 280)
+                                    .frame(maxWidth: 120, maxHeight: 120)
                                     .cornerRadius(8)
-                                    .contextMenu {
-                                        Button("保存图片") { saveImage(img) }
-                                    }
-                            } else if img.url != nil {
-                                // URL 图片加载中
-                                ProgressView()
-                                    .frame(width: 80, height: 80)
                             }
                         }
                     }
@@ -701,16 +693,6 @@ struct MessageBubble: View {
             if !message.isUser { Spacer(minLength: 60) }
         }
         .padding(.horizontal, 4)
-    }
-
-    /// 保存图片到用户选择的位置
-    private func saveImage(_ img: ImageAttachment) {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = img.fileName
-        panel.allowedContentTypes = [.png, .jpeg]
-        if panel.runModal() == .OK, let url = panel.url {
-            try? img.data.write(to: url)
-        }
     }
 }
 
@@ -1200,8 +1182,11 @@ struct SettingsPopoverView: View {
                             .foregroundColor(gatewayRestartStatus.contains("✅") ? .green : .orange)
                     }
                     Button(action: { restartGateway() }) {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.caption)
+                        HStack(spacing: 2) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text("重启")
+                        }
+                        .font(.caption2)
                     }
                     .buttonStyle(.plain)
                     .disabled(isRestartingGateway)
