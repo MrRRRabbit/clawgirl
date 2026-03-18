@@ -22,7 +22,7 @@
 
 ## ✨ 功能特性
 
-- **🎤 语音唤醒词检测** — 说"小虾"（或任意自定义唤醒词）即可免手动激活语音输入，基于 Silero VAD + WhisperKit
+- **🎤 语音唤醒词检测** — 说"小虾"（或任意自定义唤醒词）即可免手动激活语音输入，基于 Silero VAD + WhisperKit（共享模型实例）
 - **🗣️ 语音转文字** — 基于 [WhisperKit](https://github.com/argmaxinc/WhisperKit) 的端侧语音识别（无需云端 API），配合 Silero VAD 智能停止检测
 - **🔊 文字转语音** — AI 回复自动朗读，支持配置 macOS 系统语音
 - **💬 实时对话** — 通过 WebSocket 连接 OpenClaw 网关，支持流式响应
@@ -63,9 +63,13 @@ openclaw gateway start
 | 文件 | 用途 |
 |------|------|
 | `~/.openclaw/openclaw.json` | 网关认证 Token（首次启动时自动加载） |
+| `~/.openclaw/identity/device.json` | 设备密钥对（用于认证连接） |
+| `~/.openclaw/identity/device-auth.json` | 设备 Token（含 operator scopes） |
 | `~/.openclaw/agents/main/sessions/sessions.json` | 会话列表（填充设置面板中的会话选择器） |
 
-> **注意：** 网关必须在运行状态 Clawgirl 才能连接。可通过 `openclaw gateway status` 查看状态，也可以在 App 设置面板中直接重启网关。
+> **注意：** 网关必须在运行状态 Clawgirl 才能连接。可通过 `openclaw gateway status` 查看状态，也可以在 App 设置面板中重启网关。
+>
+> **注意：** Clawgirl 使用设备身份认证（Ed25519 密钥对）获取完整的 `operator.write` 权限。如果设备凭据不存在，运行 `openclaw setup` 生成。
 
 ### 2. 克隆仓库
 
@@ -127,21 +131,21 @@ huggingface-cli download argmaxinc/whisperkit-coreml \
 ```
 ┌─────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────┐
 │  持续监听     │     │  🔔 提示音    │     │  🎤 录制语音  │     │  📤 发送  │
-│  (Silero VAD │────▶│  (Glass.aiff)│────▶│  (large-v3)  │────▶│  消息    │
-│  + small 模型)│     └──────────────┘     └──────────────┘     └──────────┘
+│  (Silero VAD │────▶│  (Glass.aiff)│────▶│  (WhisperKit)│────▶│  消息    │
+│  + WhisperKit)│     └──────────────┘     └──────────────┘     └──────────┘
 └─────────────┘                                 │                    │
        │                                  Silero VAD            🔔 Submarine
        │ 说"小虾"                        自动停止 (~3s)           提示音
        ▼                                        ▼                    ▼
-  Silero VAD 检测人声               WhisperKit large-v3         AI 回复
-  → WhisperKit small               （完整语音转写）              并朗读
-  （仅匹配唤醒词，不发送）
+  Silero VAD 检测人声               WhisperKit 转写语音         AI 回复
+  → WhisperKit 匹配唤醒词          （完整语音转写）              并朗读
+  （共享模型，不发送到服务器）
 ```
 
-1. **待机** — Silero VAD（神经网络）持续监测麦克风；检测到人声时，用 WhisperKit `small` 模型检查是否为唤醒词
+1. **待机** — Silero VAD（神经网络）持续监测麦克风；检测到人声时，用共享的 WhisperKit 模型检查是否为唤醒词
 2. **唤醒** — 检测到唤醒词 → 播放 Glass 提示音 → 等待 500ms
 3. **录音** — 录制语音，由 Silero VAD 自动停止（~3 秒静音检测，基于神经网络）
-4. **发送** — 用 WhisperKit `large-v3` 转写 → 播放 Submarine 提示音 → 发送到 OpenClaw
+4. **发送** — 用 WhisperKit 转写 → 播放 Submarine 提示音 → 发送到 OpenClaw
 5. **回复** — AI 响应流式传入 → 显示在聊天记录中 → 通过 TTS 朗读
 6. **恢复** — 返回唤醒词监听状态
 
@@ -166,7 +170,7 @@ App 根据当前状态在头像下方显示不同的动画效果：
 
 | 状态 | 动画 | 颜色 |
 |------|------|------|
-| 🌊 待机 | 水波纹扩散 | 海洋蓝 |
+| 🌊 待机 | 椭圆波纹扩散 | 海洋蓝 |
 | 👂 聆听 | 跳动音频条 | 青绿色 |
 | 🤔 思考 | 弹跳圆点 | 暖沙色 |
 | 🗣️ 说话 | 脉冲声浪条 | 珊瑚色 |
@@ -181,7 +185,7 @@ clawgirl/
 │   ├── ClawgirlApp.swift          # App 入口
 │   ├── ContentView.swift           # 主 UI + 设置面板
 │   ├── ChatManager.swift           # 核心逻辑：对话、TTS、WebSocket、WhisperKit、Silero VAD
-│   ├── WakeWordDetector.swift      # 唤醒词检测：Silero VAD + WhisperKit small
+│   ├── WakeWordDetector.swift      # 唤醒词检测：Silero VAD + 共享 WhisperKit
 │   ├── DebugLog.swift              # 调试日志工具（控制台 + 文件）
 │   ├── Info.plist                  # App 权限（麦克风）
 │   ├── Clawgirl.entitlements       # 音频输入权限
@@ -192,7 +196,8 @@ clawgirl/
 │       ├── thinking.png
 │       ├── speaking_1.png
 │       └── speaking_2.png
-└── README.md
+├── README.md
+└── README_CN.md
 ```
 
 ## 🔧 常见问题
@@ -204,7 +209,7 @@ WhisperKit CoreML 模型在首次启动时需要编译，耗时：
 
 后续启动会快很多（编译后的模型会被缓存）。
 
-### 菜单栏没有麦克风图标
+### 菜单栏没有图标 / 麦克风不工作
 App 需要麦克风权限。如果系统提示没有弹出：
 1. 打开 **系统设置 → 隐私与安全性 → 麦克风**
 2. 启用 Clawgirl
@@ -234,6 +239,10 @@ xattr -cr /path/to/Clawgirl.app
 - 确保 OpenClaw 网关正在运行（`openclaw gateway status`）
 - 检查 ⚙️ 设置中的网关地址和 Token
 - 默认网关端口为 `18789`
+- 如果提示 `missing scope: operator.write`，运行 `openclaw devices rotate --device <id> --role operator --scope operator.admin --scope operator.read --scope operator.write` 更新设备 Token 权限
+
+### 提示 "missing scope: operator.write"
+OpenClaw 2026.3.13+ 要求设备身份认证才能发送消息。Clawgirl 从 `~/.openclaw/identity/` 读取设备凭据。如果这些文件不存在，运行 `openclaw setup` 生成。
 
 ## 🔗 依赖说明
 
@@ -254,9 +263,9 @@ xattr -cr /path/to/Clawgirl.app
 | 模型 | 大小 | 用途 |
 |------|------|------|
 | `openai_whisper-large-v3` | ~3 GB | 主语音转写（最高精度） |
-| `openai_whisper-small` | ~500 MB | 唤醒词检测（轻量） |
+| `openai_whisper-small` | ~500 MB | large-v3 不可用时的降级选择 |
 
-> App 会按 `large-v3 → small → base → tiny` 顺序降级选择转写模型，唤醒词检测按 `small → base → tiny` 降级。只有已下载的模型会被使用。
+> App 会按 `large-v3 → small → base → tiny` 顺序降级选择模型。唤醒词检测器共享同一个 WhisperKit 实例以节省内存（~500MB-2GB）。只有已下载的模型会被使用。
 
 ## 🤝 致谢
 

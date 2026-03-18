@@ -22,7 +22,7 @@ English | [中文](README_CN.md)
 
 ## ✨ Features
 
-- **🎤 Voice Wake Word Detection** — Say "小虾" (or any custom wake word) to activate hands-free voice input, powered by Silero VAD + WhisperKit
+- **🎤 Voice Wake Word Detection** — Say "小虾" (or any custom wake word) to activate hands-free voice input, powered by Silero VAD + WhisperKit (shared model instance)
 - **🗣️ Speech-to-Text** — Powered by [WhisperKit](https://github.com/argmaxinc/WhisperKit) (on-device, no cloud API needed), with Silero VAD for intelligent auto-stop
 - **🔊 Text-to-Speech** — Hear AI responses read aloud with configurable macOS voices
 - **💬 Real-time Chat** — WebSocket connection to your OpenClaw gateway with streaming responses
@@ -63,9 +63,13 @@ After setup, OpenClaw creates the following files that Clawgirl reads automatica
 | File | Purpose |
 |------|---------|
 | `~/.openclaw/openclaw.json` | Gateway token (auto-loaded on first launch) |
+| `~/.openclaw/identity/device.json` | Device keypair for authenticated connections |
+| `~/.openclaw/identity/device-auth.json` | Device token with operator scopes |
 | `~/.openclaw/agents/main/sessions/sessions.json` | Session list (populates the session picker) |
 
-> **Note:** The gateway must be running for Clawgirl to connect. You can check status with `openclaw gateway status` and restart from the app's settings panel.
+> **Note:** The gateway must be running for Clawgirl to connect. You can check status with `openclaw gateway status` and restart from the app's settings panel (or via `/restart` command).
+>
+> **Note:** Clawgirl uses device identity authentication (Ed25519 keypair) for full `operator.write` scope. Run `openclaw setup` to generate the device keypair if not present.
 
 ### 2. Clone the repo
 
@@ -128,21 +132,21 @@ Click the ⚙️ gear icon in the app to configure:
 ┌─────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────┐
 │  Always-on   │     │  🔔 Alert    │     │  🎤 Record   │     │  📤 Send │
 │  Listening   │────▶│  Sound       │────▶│  Your Voice  │────▶│  Message │
-│  (Silero VAD │     │  (Glass.aiff)│     │  (large-v3)  │     │          │
-│  + small model)    └──────────────┘     └──────────────┘     └──────────┘
+│  (Silero VAD │     │  (Glass.aiff)│     │  (WhisperKit)│     │          │
+│  + WhisperKit)     └──────────────┘     └──────────────┘     └──────────┘
 └─────────────┘                                 │                    │
        │                                  Silero VAD            🔔 Submarine
        │ Say "小虾"                     auto-stop (~3s)         sound plays
        ▼                                        ▼                    ▼
-  Silero VAD detects voice              WhisperKit large-v3    AI responds
-  → WhisperKit small                   (full transcription)    with TTS
-  (wake word only, never sent)
+  Silero VAD detects voice              WhisperKit transcribes  AI responds
+  → WhisperKit checks wake word        (full transcription)    with TTS
+  (shared model, never sent to server)
 ```
 
-1. **Idle** — Silero VAD (neural network) continuously monitors microphone; when voice is detected, WhisperKit `small` checks for wake word
+1. **Idle** — Silero VAD (neural network) continuously monitors microphone; when voice is detected, the shared WhisperKit model checks for wake word
 2. **Wake** — Wake word detected → plays Glass alert sound → waits 500ms
 3. **Record** — Records your speech with Silero VAD auto-stop (~3s silence detection, neural network based)
-4. **Send** — Transcribes with WhisperKit `large-v3` → plays Submarine sound → sends to OpenClaw
+4. **Send** — Transcribes with WhisperKit → plays Submarine sound → sends to OpenClaw
 5. **Reply** — AI response streams in → displayed in chat → read aloud via TTS
 6. **Resume** — Returns to wake word listening
 
@@ -167,7 +171,7 @@ The app shows different animations below the avatar based on the current state:
 
 | State | Animation | Color |
 |-------|-----------|-------|
-| 🌊 Idle | Water ripple rings | Ocean blue |
+| 🌊 Idle | Expanding ellipse ripples | Ocean blue |
 | 👂 Listening | Jumping audio bars | Turquoise |
 | 🤔 Thinking | Bouncing dots | Warm sand |
 | 🗣️ Speaking | Pulsing sound bars | Coral |
@@ -182,7 +186,7 @@ clawgirl/
 │   ├── ClawgirlApp.swift          # App entry point
 │   ├── ContentView.swift           # Main UI + settings panel
 │   ├── ChatManager.swift           # Core logic: chat, TTS, WebSocket, WhisperKit, Silero VAD
-│   ├── WakeWordDetector.swift      # Wake word detection with Silero VAD + WhisperKit small
+│   ├── WakeWordDetector.swift      # Wake word detection with Silero VAD + shared WhisperKit
 │   ├── DebugLog.swift              # Debug logging utility (console + file)
 │   ├── Info.plist                  # App permissions (microphone)
 │   ├── Clawgirl.entitlements       # Audio input entitlement
@@ -193,7 +197,8 @@ clawgirl/
 │       ├── thinking.png
 │       ├── speaking_1.png
 │       └── speaking_2.png
-└── README.md
+├── README.md
+└── README_CN.md
 ```
 
 ## 🔧 Troubleshooting
@@ -205,7 +210,7 @@ WhisperKit CoreML models need to compile on first launch. This takes:
 
 Subsequent launches will be much faster (compiled models are cached).
 
-### No microphone icon in menu bar
+### No menu bar icon / microphone not working
 The app needs microphone permission. If the system prompt didn't appear:
 1. Open **System Settings → Privacy & Security → Microphone**
 2. Enable Clawgirl
@@ -235,6 +240,10 @@ xattr -cr /path/to/Clawgirl.app
 - Ensure OpenClaw gateway is running (`openclaw gateway status`)
 - Check the gateway URL and token in ⚙️ settings
 - Default gateway port is `18789`
+- If you see `missing scope: operator.write`, run `openclaw devices rotate --device <id> --role operator --scope operator.admin --scope operator.read --scope operator.write` to update device token scopes
+
+### "missing scope: operator.write" error
+OpenClaw 2026.3.13+ requires device identity authentication for `chat.send`. Clawgirl reads device credentials from `~/.openclaw/identity/`. If these files are missing, run `openclaw setup` to generate them.
 
 ## 🔗 Dependencies
 
@@ -255,9 +264,9 @@ xattr -cr /path/to/Clawgirl.app
 | Model | Size | Purpose |
 |-------|------|---------|
 | `openai_whisper-large-v3` | ~3 GB | Main speech transcription (highest accuracy) |
-| `openai_whisper-small` | ~500 MB | Wake word detection (lightweight) |
+| `openai_whisper-small` | ~500 MB | Fallback if large-v3 unavailable |
 
-> The app auto-falls back through `large-v3 → small → base → tiny` for transcription, and `small → base → tiny` for wake word detection. Only models you've downloaded will be used.
+> The app auto-falls back through `large-v3 → small → base → tiny`. The wake word detector shares the same WhisperKit model instance to save memory (~500MB-2GB). Only models you've downloaded will be used.
 
 ## 🤝 Credits
 
