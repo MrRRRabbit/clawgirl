@@ -1206,7 +1206,7 @@ struct SettingsPopoverView: View {
             
             VStack(alignment: .leading, spacing: 6) {
                 // 当前路径显示（截断中间部分避免过长）
-                Text(chatManager.modelBasePath)
+                Text(chatManager.modelBasePath.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.secondary)
                     .lineLimit(2)

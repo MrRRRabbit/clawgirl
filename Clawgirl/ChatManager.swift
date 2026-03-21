@@ -510,11 +510,15 @@ class ChatManager: ObservableObject {
 
     /// AVSpeechSynthesizer Delegate 持有引用（防止被 ARC 释放）
     private var systemSynthDelegate: SystemSpeechDelegate?
+
+    /// 当前 speakWithSystem 的 CheckedContinuation 引用，
+    /// 在 stopTTSPipeline 中直接恢复以避免泄漏
+    private var speakContinuation: CheckedContinuation<Void, Never>?
     
     // ── 响应去重状态 ──
 
-    /// 当前响应中已处理句子的哈希集合，防止同一句子被说两遍
-    private var currentResponseSentenceHashes: Set<Int> = []
+    /// 当前响应中已处理句子的集合，防止同一句子被说两遍
+    private var currentResponseSentenceHashes: Set<String> = []
 
     /// 当前响应的 chatFinal 是否已处理（防止重复处理 final）
     private var processingFinalDone = false
@@ -798,8 +802,7 @@ class ChatManager: ObservableObject {
                 debugLog("[CM] New response detected, reset de-dup state")
             }
             // 去重：同一响应内相同句子只播放一次（防止 delta/final 重复发句）
-            let hash = sentence.hashValue
-            guard currentResponseSentenceHashes.insert(hash).inserted else {
+            guard currentResponseSentenceHashes.insert(sentence).inserted else {
                 debugLog("[CM] chatSentence SKIPPED (duplicate): '\(sentence.prefix(50))'")
                 return
             }
@@ -1019,14 +1022,18 @@ class ChatManager: ObservableObject {
         debugLog("[TTS] System speaking (\(voice?.language ?? "?"): \(voice?.name ?? "?")): '\(text.prefix(40))'")
         
         // 使用 CheckedContinuation 将 delegate 回调桥接为 async/await
+        // 将 continuation 存储到 speakContinuation，以便 stopTTSPipeline 可以在
+        // delegate 被清除前直接恢复它，避免泄漏
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            self.speakContinuation = continuation
             // 懒加载 synthesizer，复用实例避免音频管道反复初始化
             if self.systemSynth == nil {
                 self.systemSynth = AVSpeechSynthesizer()
             }
             let synth = self.systemSynth!
-            let delegate = SystemSpeechDelegate {
+            let delegate = SystemSpeechDelegate { [weak self] in
                 debugLog("[TTS] System speech finished")
+                self?.speakContinuation = nil
                 continuation.resume()
             }
             self.systemSynthDelegate = delegate  // 强引用 delegate，防止 ARC 释放
@@ -1042,7 +1049,13 @@ class ChatManager: ObservableObject {
         ttsContinuation = nil
         ttsPipelineTask?.cancel()
         ttsPipelineTask = nil
+        // 先停止语音播放（触发 didCancel delegate 回调）
         systemSynth?.stopSpeaking(at: .immediate)
+        // 如果 delegate 回调未能触发（被提前释放），直接恢复 continuation 防止泄漏
+        if let cont = speakContinuation {
+            speakContinuation = nil
+            cont.resume()
+        }
         systemSynth = nil
         systemSynthDelegate = nil
     }
@@ -1433,13 +1446,12 @@ class ChatManager: ObservableObject {
     /// 显示错误消息，2 秒后自动恢复为 idle 状态
     /// - Parameter message: 错误描述文字（将在消息中加 ⚠️ 前缀）
     private func showError(_ message: String) {
-        DispatchQueue.main.async {
-            self.state = .error
-            self.appendMessage(ChatMessage(content: "⚠️ \(message)", isUser: false))
-        }
+        state = .error
+        appendMessage(ChatMessage(content: "⚠️ \(message)", isUser: false))
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            self?.state = .idle
+            guard let self, self.state == .error else { return }
+            self.state = .idle
         }
     }
 }
@@ -1526,6 +1538,9 @@ actor WebSocketConnection {
     /// 当前 WebSocket 任务
     private var webSocket: URLSessionWebSocketTask?
 
+    /// 复用的 URLSession（避免每次重连都创建新 session 造成泄漏）
+    private var urlSession: URLSession?
+
     /// 请求 ID 计数器（自增，生成 "req-1", "req-2" 等 ID）
     private var requestId = 0
 
@@ -1580,8 +1595,11 @@ actor WebSocketConnection {
         currentResponseBuffer = ""
         ttsSentIndex = 0
         
-        let session = URLSession(configuration: .default)
-        webSocket = session.webSocketTask(with: url)
+        // 复用 URLSession，避免每次重连都创建新 session 造成泄漏
+        if urlSession == nil {
+            urlSession = URLSession(configuration: .default)
+        }
+        webSocket = urlSession!.webSocketTask(with: url)
         webSocket?.resume()
         
         debugLog("[WS] Connecting to \(config.gatewayURL) (attempt \(reconnectAttempt))")
@@ -1611,10 +1629,10 @@ actor WebSocketConnection {
                 webSocket = nil
                 emit(.disconnected(error.localizedDescription))
                 
-                // 指数退避重连：2s, 4s, 6s... 最大 30s
+                // 指数退避重连：2s, 4s, 8s, 16s... 最大 30s
                 if shouldReconnect {
                     reconnectAttempt += 1
-                    let delay = min(Double(reconnectAttempt) * 2.0, 30.0)
+                    let delay = min(pow(2.0, Double(reconnectAttempt)), 30.0)
                     debugLog("[WS] Disconnected, reconnecting in \(delay)s (attempt \(reconnectAttempt))")
                     try? await Task.sleep(for: .seconds(delay))
                     if shouldReconnect {
